@@ -15,9 +15,11 @@ ZEAL 的開發靈感來自 [Zona](https://github.com/zonawang)。希望能協助
 
 ## 安裝
 
-在此專案資料夾執行：
+複製專案後安裝相依套件：
 
 ```powershell
+git clone https://github.com/stoday/ZEAL.git
+cd ZEAL
 uv sync
 ```
 

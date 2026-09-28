@@ -18,9 +18,11 @@ their time developing the Bot itself.
 
 ## Install
 
-In this project folder, run:
+Clone the repository and install its dependencies:
 
 ```powershell
+git clone https://github.com/stoday/ZEAL.git
+cd ZEAL
 uv sync
 ```
 
