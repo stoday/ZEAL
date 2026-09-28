@@ -2,11 +2,12 @@
 
 [繁體中文](README.zh-TW.md) | English
 
-ZEAL helps you quickly create and configure a LINE Bot.
+ZEAL (**Zona's Easy Adapter for Lin-bot**) helps you quickly create and
+configure a LINE Bot.
 
-Inspired by Zora, ZEAL is named **Zora Easy Adapter for Lin-bot**. It aims to
-help anyone who wants to build a LINE Bot finish the basic setup quickly, so
-they can spend their time developing the Bot itself.
+Inspired by [Zona](https://github.com/zonawang), ZEAL aims to help anyone who
+wants to build a LINE Bot finish the basic setup quickly, so they can spend
+their time developing the Bot itself.
 
 ## Before you begin
 

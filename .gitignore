@@ -1,0 +1,13 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# ZEAL's local Playwright session: may contain LINE login cookies.
+.zeal-line-browser-profile/
