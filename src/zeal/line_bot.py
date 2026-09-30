@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -247,37 +248,56 @@ if __name__ == "__main__":
 '''
 
 
+def project_files(account: AccountDetails) -> dict[str, str]:
+    """The files ZEAL may safely recognise when resuming an unfinished setup."""
+    return {
+        "app.py": generated_app(),
+        "requirements.txt": "flask>=3.0,<4\nrequests>=2.31,<3\npython-dotenv>=1.0,<2\n",
+        ".gitignore": ".env\n.venv/\n__pycache__/\n*.py[cod]\n",
+        ".env.example": (
+            "LINE_CHANNEL_SECRET=replace_me\n"
+            "LINE_CHANNEL_ACCESS_TOKEN=replace_me\n"
+            f"PORT={account.port}\n"
+        ),
+        "README.md": (
+            f"# {account.name} LINE Bot\n\n"
+            "此資料夾由 `zeal line-bot setup` 產生。\n\n"
+            "## 開發\n\n"
+            "```bash\npython -m venv .venv\n"
+            "# Windows: .\\.venv\\Scripts\\Activate.ps1\n"
+            "# macOS/Linux: source .venv/bin/activate\n"
+            "pip install -r requirements.txt\npython app.py\n```\n\n"
+            "`.env` 含有 LINE 憑證，已被 `.gitignore` 排除；請勿提交或分享。\n"
+        ),
+    }
+
+
 def write_project(directory: Path, account: AccountDetails) -> None:
     if directory.exists():
         raise SetupError(f"目標資料夾已存在，為避免覆寫而停止：{directory}")
-
     directory.mkdir(parents=True)
-    (directory / "app.py").write_text(generated_app(), encoding="utf-8")
-    (directory / "requirements.txt").write_text(
-        "flask>=3.0,<4\nrequests>=2.31,<3\npython-dotenv>=1.0,<2\n",
-        encoding="utf-8",
-    )
-    (directory / ".gitignore").write_text(
-        ".env\n.venv/\n__pycache__/\n*.py[cod]\n",
-        encoding="utf-8",
-    )
-    (directory / ".env.example").write_text(
-        "LINE_CHANNEL_SECRET=replace_me\n"
-        "LINE_CHANNEL_ACCESS_TOKEN=replace_me\n"
-        f"PORT={account.port}\n",
-        encoding="utf-8",
-    )
-    (directory / "README.md").write_text(
-        f"# {account.name} LINE Bot\n\n"
-        "此資料夾由 `zeal line-bot setup` 產生。\n\n"
-        "## 開發\n\n"
-        "```bash\npython -m venv .venv\n"
-        "# Windows: .\\.venv\\Scripts\\Activate.ps1\n"
-        "# macOS/Linux: source .venv/bin/activate\n"
-        "pip install -r requirements.txt\npython app.py\n```\n\n"
-        "`.env` 含有 LINE 憑證，已被 `.gitignore` 排除；請勿提交或分享。\n",
-        encoding="utf-8",
-    )
+    for name, contents in project_files(account).items():
+        (directory / name).write_text(contents, encoding="utf-8")
+
+
+def prepare_setup_project(directory: Path, account: AccountDetails) -> bool:
+    """Reuse only an untouched project from a setup interrupted before credentials."""
+    if not directory.exists():
+        write_project(directory, account)
+        return False
+    env_file = directory / ".env"
+    if directory.is_symlink() or not directory.is_dir() or env_file.exists() or env_file.is_symlink():
+        raise SetupError(f"目標資料夾已存在，為避免覆寫而停止：{directory}")
+    try:
+        unchanged = all(
+            (directory / name).read_text(encoding="utf-8") == contents
+            for name, contents in project_files(account).items()
+        )
+    except (OSError, UnicodeError):
+        unchanged = False
+    if not unchanged:
+        raise SetupError(f"目標資料夾已存在且內容不同，為避免覆寫而停止：{directory}")
+    return True
 
 
 def write_credentials(directory: Path, credentials: Credentials, port: int) -> None:
@@ -755,28 +775,51 @@ class LineConsoleBrowser:
         page = self.context.new_page()
         page.goto(LINE_OFFICIAL_ACCOUNT_ENTRY_URL, wait_until="domcontentloaded")
         print("\n已開啟由 ZEAL 控制的可見瀏覽器，並直接前往「建立LINE官方帳號」表單。")
-        print("若畫面要求登入，請只完成 LINE 登入、OTP/MFA 或 CAPTCHA；不需要自行尋找 Accounts 或 Create new。")
-        print("看到「建立LINE官方帳號」頁面後，ZEAL 會直接填入：")
+        print("若畫面要求登入，請自行完成 LINE 登入、OTP/MFA 或 CAPTCHA。")
+        print("登入完成後按 Enter；ZEAL 會重新開啟建立表單，並填入：")
         print(f"     名稱：{account.name}")
         print(f"     公司／店鋪名稱：{account.company_name}")
         print("     電子郵件帳號：已由 CLI 安全讀取，將直接填入表單。")
         print("     業種大分類與小分類：ZEAL 會從 LINE 表單即時讀取選項後詢問。")
         print("\n登入、OTP/MFA 與 CAPTCHA 由你本人完成；ZEAL 不會記錄密碼、Cookie 或 OTP。")
-        input("看到建立表單後按 Enter，讓 ZEAL 開始填寫：")
-        if "entry.line.biz/form/entry" not in page.url:
-            matching_pages = [
-                candidate
-                for candidate in self.pages
-                if "entry.line.biz/form/entry" in candidate.url
-            ]
-            if not matching_pages:
-                raise SetupError("尚未回到 LINE 官方帳號建立表單；請完成登入後再試一次。")
-            page = matching_pages[-1]
-        self.fill_official_account_form(account, page)
-        return page
+        input("完成登入後按 Enter，讓 ZEAL 前往建立表單：")
+        while True:
+            form_page = self._wait_for_entry_form(seconds=2)
+            if form_page is None:
+                if page.is_closed():
+                    page = self.context.new_page()
+                try:
+                    page.goto(LINE_OFFICIAL_ACCOUNT_ENTRY_URL, wait_until="domcontentloaded")
+                except Exception:
+                    # A temporary redirect or network error should not close the
+                    # visible login session while the user is still signing in.
+                    pass
+                form_page = self._wait_for_entry_form(seconds=10)
+            if form_page is not None:
+                self.fill_official_account_form(account, form_page)
+                return form_page
+            print("尚未看到 LINE 官方帳號建立表單；瀏覽器會保持開啟，請完成登入或驗證。")
+            input("完成後按 Enter 再試一次（Ctrl+C 可取消）：")
+
+    def _wait_for_entry_form(self, *, seconds: int) -> Any | None:
+        """Wait for the live entry form rather than trusting a login redirect URL."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            for candidate in reversed(self.pages):
+                with contextlib.suppress(Exception):
+                    location = urllib.parse.urlsplit(candidate.url)
+                    if (
+                        not candidate.is_closed()
+                        and location.hostname == "entry.line.biz"
+                        and location.path.startswith("/form/entry/unverified")
+                        and candidate.locator("select").count() >= 3
+                    ):
+                        return candidate
+            time.sleep(0.25)
+        return None
 
     def submit_account_creation(self, page: Any) -> None:
-        """Submit the form while leaving all proof-of-humanity work to the user.
+        """Validate the form, then let the account holder review LINE's confirmation.
 
         Only browser controls marked as required are checked.  Optional consent
         (for example, marketing messages) is intentionally left untouched.
@@ -794,16 +837,33 @@ class LineConsoleBrowser:
             input("完成人類驗證後按 Enter；ZEAL 會送出已填好的表單：")
             self._click_first(page, ("Create", "建立", "確定", "Submit"))
 
+        if any(account_creation_detected(current.url, self._page_text(current)) for current in self.pages):
+            return
+        print("\n若 LINE 要求人類驗證，請先自行完成；接著在可見瀏覽器核對資料與同意事項。")
+        input("確認無誤後按 Enter，ZEAL 會按「完成」送出建立申請：")
+        if any(account_creation_detected(current.url, self._page_text(current)) for current in self.pages):
+            return
+        clicked = False
+        for current in reversed(self.pages):
+            if self._click_first(current, ("完成", "Finish", "Complete", "Done"), required=False):
+                clicked = True
+                break
+        if not clicked:
+            print("ZEAL 未找到確認頁的「完成」按鈕；請在目前可見瀏覽器自行按下。")
+        input("若 LINE 要求圖片驗證，請自行完成；若仍在確認頁，請再按「完成」。看到建立成功後按 Enter：")
+
     def continue_after_account_creation(self) -> None:
         """Wait for LINE's success state, then persist it and switch headless."""
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            for page in self.pages:
-                if account_creation_detected(page.url, self._page_text(page)):
-                    self.restart(headless=True)
-                    return
-            time.sleep(1)
-        raise SetupError("60 秒內未偵測到官方帳號建立完成；已保留可見瀏覽器供確認。")
+        while True:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                for page in self.pages:
+                    if account_creation_detected(page.url, self._page_text(page)):
+                        self.restart(headless=True)
+                        return
+                time.sleep(1)
+            print("尚未偵測到官方帳號建立完成；瀏覽器會保持開啟。")
+            input("請完成 LINE 確認或人類驗證後按 Enter 再檢查（Ctrl+C 可取消）：")
 
     def enable_messaging_api(self, account_name: str) -> MessagingApiSetup:
         """Enable Messaging API and return its generated channel ID.
@@ -903,8 +963,12 @@ def run_setup(args: Any) -> None:
     account = prompt_account_details(args.port)
     output_root = (args.output or Path.cwd()).resolve()
     destination = project_directory(output_root, account.name)
-    write_project(destination, account)
-    print(f"\n已建立專案：{destination}")
+    try:
+        reused = prepare_setup_project(destination, account)
+    except SetupError as error:
+        print(f"\n設定未完成：{error}", file=sys.stderr)
+        return
+    print(f"\n{'接續前次未完成的專案' if reused else '已建立專案'}：{destination}")
 
     ngrok: subprocess.Popen[str] | None = None
     app: subprocess.Popen[str] | None = None

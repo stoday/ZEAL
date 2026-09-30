@@ -46,8 +46,12 @@ uv run zeal line-bot setup
 
 Follow the terminal prompts to enter the required account information. When
 LINE opens a browser and asks you to sign in, enter an OTP/MFA code, or confirm
-that you are human, complete that step yourself. ZEAL performs the remaining
-supported setup automatically.
+that you are human, complete that step yourself. Press Enter after signing in;
+ZEAL returns to the account form and continues filling it. If sign-in is still
+in progress, the browser stays open and ZEAL asks again. ZEAL performs the
+remaining supported setup automatically. If setup stopped before writing
+`.env`, rerun the same command with the same details to reuse an unchanged
+local project.
 
 At the end, scan the QR code, send the Bot a message, and confirm the reply.
 ZEAL creates `line-bot-<account-name>/`; edit `app.py` there to change the

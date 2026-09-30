@@ -23,6 +23,7 @@ from zeal.line_bot import (
     prompt_provider_choice,
     default_browser_profile_directory,
     project_directory,
+    prepare_setup_project,
     write_credentials,
     write_project,
 )
@@ -60,6 +61,97 @@ class LineBotProjectTests(unittest.TestCase):
             destination.mkdir()
             with self.assertRaisesRegex(Exception, "已存在"):
                 write_project(destination, AccountDetails("測試", "教育", 8000))
+
+    def test_unfinished_setup_can_reuse_only_an_unchanged_project(self) -> None:
+        account = AccountDetails("測試", "", 8000)
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "line-bot-test"
+            self.assertFalse(prepare_setup_project(destination, account))
+            self.assertTrue(prepare_setup_project(destination, account))
+
+            app_file = destination / "app.py"
+            app_file.write_text("# user edit\n", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "內容不同"):
+                prepare_setup_project(destination, account)
+            self.assertEqual(app_file.read_text(encoding="utf-8"), "# user edit\n")
+
+            app_file.write_text(generated_app(), encoding="utf-8")
+            (destination / ".env").write_text("secret", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "已存在"):
+                prepare_setup_project(destination, account)
+
+    def test_login_redirect_retries_in_visible_browser_until_form_is_ready(self) -> None:
+        class FakePage:
+            def __init__(self) -> None:
+                self.url = "about:blank"
+                self.goto_count = 0
+
+            def goto(self, url: str, **_: object) -> None:
+                self.goto_count += 1
+                self.url = "https://account.line.biz/login" if self.goto_count < 3 else url
+
+            def is_closed(self) -> bool:
+                return False
+
+        class FakeContext:
+            def __init__(self, page: FakePage) -> None:
+                self.page = page
+                self.closed = False
+
+            @property
+            def pages(self) -> list[FakePage]:
+                return [self.page]
+
+            def new_page(self) -> FakePage:
+                return self.page
+
+            def close(self) -> None:
+                self.closed = True
+
+        page = FakePage()
+        context = FakeContext(page)
+        browser = LineConsoleBrowser(True, Path(tempfile.gettempdir()) / "zeal-test-profile")
+        browser.context = context
+        account = AccountDetails("測試", "", 8000, "公司", "test@example.com")
+        with (
+            patch("builtins.input", side_effect=["", ""]) as prompt,
+            patch.object(browser, "_wait_for_entry_form", side_effect=[None, None, None, page]),
+            patch.object(browser, "fill_official_account_form") as fill,
+        ):
+            result = browser.begin_account_creation(account)
+
+        self.assertIs(result, page)
+        self.assertEqual(page.goto_count, 3)
+        self.assertEqual(prompt.call_count, 2)
+        fill.assert_called_once_with(account, page)
+        self.assertFalse(context.closed)
+
+    def test_entry_form_wait_requires_the_real_line_host_and_loaded_selects(self) -> None:
+        class FakeSelects:
+            def __init__(self, count: int) -> None:
+                self.count_value = count
+
+            def count(self) -> int:
+                return self.count_value
+
+        class FakePage:
+            def __init__(self, url: str, selects: int) -> None:
+                self.url = url
+                self.selects = selects
+
+            def is_closed(self) -> bool:
+                return False
+
+            def locator(self, selector: str) -> FakeSelects:
+                self.assert_selector = selector
+                return FakeSelects(self.selects)
+
+        real_form = FakePage(LINE_OFFICIAL_ACCOUNT_ENTRY_URL, 3)
+        lookalike = FakePage("https://example.invalid/?next=entry.line.biz/form/entry/unverified", 3)
+        browser = LineConsoleBrowser(True, Path(tempfile.gettempdir()) / "zeal-test-profile")
+        browser.context = type("FakeContext", (), {"pages": [real_form, lookalike]})()
+
+        self.assertIs(browser._wait_for_entry_form(seconds=1), real_form)
 
     def test_resume_is_a_public_cli_command(self) -> None:
         args = build_parser().parse_args(
@@ -259,11 +351,38 @@ class LineBotProjectTests(unittest.TestCase):
         button = FakeButton()
         page = FakePage(required, button)
         browser = LineConsoleBrowser(True, Path(tempfile.gettempdir()) / "zeal-test-profile")
+        browser.context = type("FakeContext", (), {"pages": [page]})()
 
-        browser.submit_account_creation(page)
+        with patch("builtins.input", return_value="") as prompt:
+            browser.submit_account_creation(page)
 
         self.assertTrue(required.checked)
         self.assertTrue(button.clicked)
+        self.assertEqual(page.last_label, "完成")
+        self.assertEqual(prompt.call_count, 2)
+
+    def test_account_creation_wait_keeps_visible_session_after_first_check(self) -> None:
+        class FakePage:
+            url = LINE_OFFICIAL_ACCOUNT_ENTRY_URL
+
+        page = FakePage()
+        browser = LineConsoleBrowser(True, Path(tempfile.gettempdir()) / "zeal-test-profile")
+        browser.context = type("FakeContext", (), {"pages": [page]})()
+
+        def mark_created(_: str) -> str:
+            page.url = "https://manager.line.biz/"
+            return ""
+
+        with (
+            patch("zeal.line_bot.time.monotonic", side_effect=[0, 16, 20, 20]),
+            patch("builtins.input", side_effect=mark_created) as prompt,
+            patch.object(browser, "_page_text", return_value=""),
+            patch.object(browser, "restart") as restart,
+        ):
+            browser.continue_after_account_creation()
+
+        prompt.assert_called_once()
+        restart.assert_called_once_with(headless=True)
 
 
 if __name__ == "__main__":
