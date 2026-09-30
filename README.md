@@ -1,6 +1,6 @@
 # ZEAL
 
-[繁體中文](README.zh-TW.md) | English
+[繁體中文](https://github.com/stoday/ZEAL/blob/main/README.zh-TW.md) | English
 
 ZEAL (**Zona's Easy Adapter for Lin-bot**) helps you quickly create and
 configure a LINE Bot.
@@ -18,7 +18,13 @@ their time developing the Bot itself.
 
 ## Install
 
-Clone the repository and install its dependencies:
+Install the published package from PyPI:
+
+```powershell
+uv tool install zeal-builder
+```
+
+To work from the source checkout instead:
 
 ```powershell
 git clone https://github.com/stoday/ZEAL.git
@@ -27,6 +33,12 @@ uv sync
 ```
 
 ## Run
+
+```powershell
+zeal line-bot setup
+```
+
+From the source checkout, use:
 
 ```powershell
 uv run zeal line-bot setup
@@ -45,15 +57,17 @@ Bot's reply. Keep `.env` private.
 
 ```powershell
 # Keep the local Bot and ngrok running after setup
-uv run zeal line-bot setup --keep-running
+zeal line-bot setup --keep-running
 
 # Set up a local Bot project for an existing LINE Messaging API channel
-uv run zeal line-bot resume
+zeal line-bot resume
 
 # View all available options
-uv run zeal line-bot setup --help
-uv run zeal line-bot resume --help
+zeal line-bot setup --help
+zeal line-bot resume --help
 ```
+
+When working from the source checkout, prefix these commands with `uv run`.
 
 After setup, use [LINE Official Account Manager](https://manager.line.biz/) to
 edit account details and automatic replies. Use the
@@ -61,4 +75,4 @@ edit account details and automatic replies. Use the
 Webhook and Messaging API settings.
 
 For a detailed manual walkthrough in Traditional Chinese, see
-[line-bot-apply.md](line-bot-apply.md).
+[line-bot-apply.md](https://github.com/stoday/ZEAL/blob/main/line-bot-apply.md).

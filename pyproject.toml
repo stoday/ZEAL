@@ -1,9 +1,10 @@
 [project]
-name = "zeal"
+name = "zeal-builder"
 version = "0.1.0"
-description = "Add your description here"
+description = "Create and configure a LINE Messaging API echo bot from your terminal."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "stoday", email = "stoday@gmail.com" }
 ]
@@ -12,12 +13,19 @@ dependencies = [
     "playwright>=1.55,<2",
 ]
 
+[project.urls]
+Repository = "https://github.com/stoday/ZEAL"
+Issues = "https://github.com/stoday/ZEAL/issues"
+
 [project.scripts]
 zeal = "zeal:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "zeal"
 
 [dependency-groups]
 dev = [
