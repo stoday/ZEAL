@@ -5,6 +5,7 @@ import unittest
 import os
 import subprocess
 import json
+import sys
 from contextlib import redirect_stdout
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -19,6 +20,7 @@ from zeal.line_bot import (
     MessagingApiSetup,
     LINE_OFFICIAL_ACCOUNT_ENTRY_URL,
     LineConsoleBrowser,
+    _install_chromium_if_missing,
     NgrokAsset,
     NGROK_AUTHTOKEN_URL,
     SetupError,
@@ -560,6 +562,42 @@ class LineBotProjectTests(unittest.TestCase):
             provider, created = prompt_provider_choice(("Company A", "Company B"))
         self.assertIsNone(provider)
         self.assertEqual(created, "New Company")
+
+    def test_missing_chromium_installs_linux_dependencies_with_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            browser_type = type("BrowserType", (), {"executable_path": str(Path(temporary) / "chrome")})()
+            output = StringIO()
+            with (
+                patch("zeal.line_bot.platform.system", return_value="Linux"),
+                patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
+                redirect_stdout(output),
+            ):
+                _install_chromium_if_missing(browser_type)
+
+        run.assert_called_once_with(
+            [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+            check=False,
+        )
+        self.assertIn("正在下載 Playwright Chromium", output.getvalue())
+        self.assertIn("Linux 所需的系統套件", output.getvalue())
+
+    def test_chromium_install_uses_os_command_only_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "chrome"
+            browser_type = type("BrowserType", (), {"executable_path": str(executable)})()
+            with (
+                patch("zeal.line_bot.platform.system", return_value="Windows"),
+                patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
+                redirect_stdout(StringIO()) as output,
+            ):
+                _install_chromium_if_missing(browser_type)
+                executable.touch()
+                _install_chromium_if_missing(browser_type)
+
+        run.assert_called_once_with(
+            [sys.executable, "-m", "playwright", "install", "chromium"], check=False
+        )
+        self.assertEqual(output.getvalue().count("正在下載 Playwright Chromium"), 1)
 
     def test_browser_starts_visible_with_persistent_profile(self) -> None:
         class FakeContext:

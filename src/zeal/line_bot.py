@@ -801,6 +801,22 @@ def account_creation_detected(url: str, page_text: str) -> bool:
     return any(marker.casefold() in normalized for marker in ACCOUNT_CREATED_MARKERS)
 
 
+def _install_chromium_if_missing(browser_type: Any) -> None:
+    """Install Playwright's current headed Chromium when its executable is absent."""
+    if Path(browser_type.executable_path).is_file():
+        return
+
+    command = [sys.executable, "-m", "playwright", "install"]
+    if platform.system() == "Linux":
+        command.append("--with-deps")
+        print("ZEAL 也會安裝 Linux 所需的系統套件；可能需要管理員權限。", flush=True)
+    command.append("chromium")
+    print("ZEAL 正在下載 Playwright Chromium，請稍候…", flush=True)
+    result = subprocess.run(command, check=False)
+    if result.returncode:
+        raise SetupError("Playwright Chromium 安裝失敗；請檢查網路與系統安裝權限後重試。")
+
+
 class LineConsoleBrowser:
     """A persistent visible LINE session shared by automation and human checks."""
 
@@ -813,13 +829,6 @@ class LineConsoleBrowser:
         self.account_finish_clicked = False
 
     def __enter__(self) -> "LineConsoleBrowser":
-        if not self.skip_browser_install:
-            result = subprocess.run(
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-                check=False,
-            )
-            if result.returncode:
-                raise SetupError("Playwright Chromium 安裝失敗。可修正網路後重試。")
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as error:
@@ -827,6 +836,8 @@ class LineConsoleBrowser:
 
         self.playwright = sync_playwright().start()
         try:
+            if not self.skip_browser_install:
+                _install_chromium_if_missing(self.playwright.chromium)
             self._launch_context()
         except Exception:
             self.playwright.stop()

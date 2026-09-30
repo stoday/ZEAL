@@ -44,6 +44,9 @@ From the source checkout, use:
 uv run zeal line-bot setup
 ```
 
+When Playwright Chromium is missing, ZEAL announces and downloads it. On Linux,
+it also installs required system packages, which may require administrator privileges.
+
 ZEAL explains the steps first and starts after you press Enter. It reports each
 stage as it runs. Enter account details and choose an industry in the terminal. The LINE browser
 stays visible, and ZEAL fills the form; you do not enter the same details on

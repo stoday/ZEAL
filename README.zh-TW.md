@@ -41,6 +41,8 @@ zeal line-bot setup
 uv run zeal line-bot setup
 ```
 
+缺少 Playwright Chromium 時，ZEAL 會先告知並下載；在 Linux 上也會安裝所需的系統套件，可能需要管理員權限。
+
 ZEAL 會先說明流程，按 Enter 後才開始；之後會逐步顯示目前要做的事。依終端機指示輸入帳號資料與業種；LINE 瀏覽器會保持可見，由 ZEAL 填寫表單，不需在網頁重複輸入。
 畫面顯示灰色遮罩時，ZEAL 正在操作，網頁暫不接受手動輸入；顯示綠色提示時才由你操作。
 LINE 要求登入、OTP／MFA 或人類驗證時，請在同一個瀏覽器完成；ZEAL 接手後會重新鎖定網頁。
