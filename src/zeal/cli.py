@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--browser-profile",
         type=Path,
-        help="保存 LINE 登入狀態的 Playwright profile 目錄（預設為目前目錄的 .zeal-line-browser-profile）。",
+        help="Playwright profile directory for saved LINE sign-in state (default: .zeal-line-browser-profile in the current directory).",
     )
     runtime = setup.add_mutually_exclusive_group()
     runtime.add_argument(
@@ -100,22 +100,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume.add_argument(
         "--channel-id",
-        help="LINE Developers Console 的數字 Channel ID；提供後可自動設定 Webhook。",
+        help="Numeric Channel ID from LINE Developers Console; enables automatic Webhook setup.",
     )
     resume.add_argument(
         "--skip-browser-install",
         action="store_true",
-        help="不下載 Playwright Chromium；瀏覽器尚未存在時會失敗。",
+        help="Do not download Playwright Chromium; fail if it is unavailable.",
     )
     resume.add_argument(
         "--browser-profile",
         type=Path,
-        help="保存 LINE 登入狀態的 Playwright profile 目錄（預設為目前目錄的 .zeal-line-browser-profile）。",
+        help="Playwright profile directory for saved LINE sign-in state (default: .zeal-line-browser-profile in the current directory).",
     )
     resume.add_argument(
         "--no-browser",
         action="store_true",
-        help="不要開啟瀏覽器，僅印出 Webhook URL 供手動設定。",
+        help="Do not open a browser; print the Webhook URL for manual setup.",
     )
     resume.set_defaults(handler=run_resume)
     return parser

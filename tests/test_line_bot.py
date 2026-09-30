@@ -48,6 +48,16 @@ from zeal.line_bot import (
 
 
 class LineBotProjectTests(unittest.TestCase):
+    def test_line_bot_help_is_english(self) -> None:
+        for command in ("setup", "resume"):
+            with self.subTest(command=command):
+                output = StringIO()
+                with redirect_stdout(output), self.assertRaises(SystemExit) as exit_result:
+                    build_parser().parse_args(["line-bot", command, "--help"])
+                self.assertEqual(exit_result.exception.code, 0)
+                self.assertIn("--browser-profile", output.getvalue())
+                self.assertNotRegex(output.getvalue(), r"[\u3400-\u9fff]")
+
     def test_setup_keeps_services_running_by_default(self) -> None:
         parser = build_parser()
         self.assertTrue(parser.parse_args(["line-bot", "setup"]).keep_running)

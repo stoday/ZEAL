@@ -190,10 +190,14 @@ def prompt_option(
 
 def prompt_provider_choice(options: tuple[str, ...]) -> tuple[str | None, str | None]:
     """Let the account holder choose an irreversible Provider at the last responsible moment."""
+    print("\nProvider 代表管理這項服務與 Messaging API Channel 的經營者，不是管理員帳號。")
+    print("例：由「小明咖啡有限公司」管理「小明咖啡客服」與「小明咖啡活動」兩個官方帳號。")
+    print("請選實際經營者的 Provider；連結後無法改掛到其他 Provider。")
     choice = prompt_option("LINE Provider", (*options, NEW_PROVIDER_OPTION))
     if choice != NEW_PROVIDER_OPTION:
         return choice, None
     while True:
+        print("新 Provider 可用經營者名稱命名。例：小明咖啡有限公司、星球讀書會。")
         name = input("新 Provider 名稱：").strip()
         if name:
             return None, name
@@ -237,21 +241,22 @@ class NgrokAsset:
 
 def prompt_account_details(port: int) -> AccountDetails:
     print("\nLINE Official Account 的資料會在下一步填入 LINE 後台。")
-    print("名稱範例：小明咖啡客服、星球讀書會。")
+    print("官方帳號名稱會顯示在顧客的 LINE 聊天室。例：小明咖啡客服、星球讀書會。")
     name = input("官方帳號名稱：").strip()
     if not name:
         raise SetupError("官方帳號名稱不可空白。")
     if len(name) > 20:
         raise SetupError("官方帳號名稱不可超過 20 個字元。")
 
-    print("公司名稱範例：小明咖啡有限公司、星球讀書會。個人可填經營名稱。")
+    print("公司／店鋪名稱會填入 LINE 申請表；它不會自動建立或選定 Provider。")
+    print("例：小明咖啡有限公司、小明咖啡；個人可填經營名稱，如星球讀書會。")
     company_name = input("公司／店鋪名稱：").strip()
     if not company_name:
         raise SetupError("公司／店鋪名稱不可空白。")
     if len(company_name) > 100:
         raise SetupError("公司／店鋪名稱不可超過 100 個字元。")
 
-    print("此信箱會填入 LINE 官方帳號申請表，請使用可收信的地址。")
+    print("此信箱會填入 LINE 官方帳號申請表，請使用可收信的地址。例：hello@example.com。")
     email = input("電子郵件帳號：").strip()
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or len(email) > 240:
         raise SetupError("請輸入有效的電子郵件帳號（最長 240 個字元）。")
@@ -531,6 +536,8 @@ def format_runtime_instructions(
 
 def prompt_existing_credentials() -> Credentials:
     """Read credentials from the controlling terminal without echoing them."""
+    print("請從 LINE Developers Console 的 Channel 複製憑證：Basic settings 中的 Channel secret，")
+    print("以及 Messaging API 中的 Channel access token；ZEAL 會將它們存入本機 .env。")
     secret = getpass.getpass("Channel secret（輸入不會顯示）：").strip()
     token = getpass.getpass("Channel access token（輸入不會顯示）：").strip()
     if not re.fullmatch(r"[0-9a-fA-F]{32}", secret):
@@ -652,6 +659,9 @@ def install_ngrok() -> Path:
 
 
 def ngrok_authtoken(argument_value: str | None) -> str:
+    if not argument_value and not os.environ.get("NGROK_AUTHTOKEN"):
+        print("ngrok Authtoken 用來建立公開 HTTPS 連線，讓 LINE 能把訊息送到本機 Bot。")
+        print(f"請從 ngrok Dashboard 複製你的 Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
     return argument_value or os.environ.get("NGROK_AUTHTOKEN") or getpass.getpass(
         "ngrok Authtoken（輸入不會顯示；可先設定 NGROK_AUTHTOKEN）："
     )
@@ -1103,6 +1113,7 @@ class LineConsoleBrowser:
         if not major_options:
             raise SetupError("LINE 表單目前沒有可選的業種大分類。")
 
+        print("業種會填入官方帳號資料；請依實際經營內容選擇。例：咖啡店選最接近餐飲的分類。")
         major_category = prompt_option("業種大分類", major_options, two_columns=True)
         try:
             self._act(form_page, lambda: major_select.select_option(label=major_category))
@@ -1122,6 +1133,7 @@ class LineConsoleBrowser:
         if not minor_options:
             raise SetupError("此業種目前沒有可選的小分類；請在瀏覽器手動確認。")
 
+        print("請在此大分類中選更貼近的細項；以 LINE 目前列出的選項為準。")
         minor_category = prompt_option("業種小分類", minor_options, two_columns=True)
         try:
             self._act(form_page, lambda: minor_select.select_option(label=minor_category))
@@ -1568,6 +1580,9 @@ def run_setup(args: Any) -> None:
 
 def run_resume(args: Any) -> None:
     """Create and start a local project for an existing channel, without new LINE setup."""
+    if not args.name:
+        print("請填 LINE Manager 中既有官方帳號的名稱，ZEAL 會用它命名本機 Bot 專案。")
+        print("例：小明咖啡客服、星球讀書會。")
     name = (args.name or input("既有 LINE Official Account 名稱：")).strip()
     if not name:
         raise SetupError("官方帳號名稱不可空白。")
@@ -1596,6 +1611,11 @@ def run_resume(args: Any) -> None:
         _, public_url = tunnel_url(binary, args.port, directory)
 
     callback_url = f"{public_url}/callback"
+    if not args.channel_id:
+        print("Channel ID 是 LINE Developers Console 中 Messaging API Channel 的數字編號。")
+        print("例：2001234567；留空則改為手動設定 Webhook。")
+        if not args.no_browser:
+            print("填入後 ZEAL 會嘗試自動設定 Webhook。")
     channel_id = (args.channel_id or input("LINE Channel ID（留空則改為手動設定 Webhook）：")).strip()
     configured = False
     if channel_id and not args.no_browser:
