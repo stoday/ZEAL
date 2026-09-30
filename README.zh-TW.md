@@ -41,23 +41,25 @@ zeal line-bot setup
 uv run zeal line-bot setup
 ```
 
-依終端機指示輸入帳號資料與業種；LINE 瀏覽器會保持可見，由 ZEAL 填寫表單，不需在網頁重複輸入。
+ZEAL 會先說明流程，按 Enter 後才開始；之後會逐步顯示目前要做的事。依終端機指示輸入帳號資料與業種；LINE 瀏覽器會保持可見，由 ZEAL 填寫表單，不需在網頁重複輸入。
 畫面顯示灰色遮罩時，ZEAL 正在操作，網頁暫不接受手動輸入；顯示綠色提示時才由你操作。
 LINE 要求登入、OTP／MFA 或人類驗證時，請在同一個瀏覽器完成；ZEAL 接手後會重新鎖定網頁。
 填好資料後，LINE 表單的「建立／確定」和確認頁的「完成」都由 ZEAL 自動按下。
 若 LINE 顯示「同意我們使用您的資訊」，ZEAL 也會按下該頁的「同意」。
 其餘支援的設定會由 ZEAL 自動完成。
 若設定在寫入 `.env` 前中斷，重新執行同一指令並輸入相同資料；ZEAL 會先檢查 LINE 管理頁是否已有同名帳號，再接續未修改的本機專案。
+完成後指令會結束，Bot 與 ngrok 留在背景。摘要會顯示程序 PID、日誌位置，以及目前作業系統的查看和停止指令。
 
-最後掃描 QR Code、傳訊息給 Bot，確認收到回覆。ZEAL 會建立
-`line-bot-<帳號名稱>/`；若要修改 Bot 回覆內容，編輯其中的 `app.py` 即可。
+最後掃描 QR Code、傳訊息給 Bot，確認收到回覆。設定 Webhook 後，ZEAL 會關閉
+LINE 的預設自動回覆，避免同一則訊息收到兩次回覆；加好友歡迎訊息仍可自行設定。
+ZEAL 會建立 `line-bot-<帳號名稱>/`；若要修改 Bot 回覆內容，編輯其中的 `app.py` 即可。
 請保持 `.env` 私密。
 
 ## 其他指令說明
 
 ```powershell
-# 設定完成後，持續執行本機 Bot 與 ngrok
-zeal line-bot setup --keep-running
+# 只完成設定，結束時停止本次啟動的 Bot 與 ngrok
+zeal line-bot setup --stop-after-setup
 
 # 已經有 LINE Messaging API channel 時，建立本機 Bot 專案並完成設定
 zeal line-bot resume

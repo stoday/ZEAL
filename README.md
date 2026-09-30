@@ -44,7 +44,8 @@ From the source checkout, use:
 uv run zeal line-bot setup
 ```
 
-Enter account details and choose an industry in the terminal. The LINE browser
+ZEAL explains the steps first and starts after you press Enter. It reports each
+stage as it runs. Enter account details and choose an industry in the terminal. The LINE browser
 stays visible, and ZEAL fills the form; you do not enter the same details on
 the site. A gray veil means ZEAL is working and the page is locked against
 manual input; a green notice means you can use the page. Complete sign-in,
@@ -55,16 +56,20 @@ the "Agree to our use of your information" page, ZEAL clicks Agree. If
 setup stopped before writing `.env`, rerun the same command with the same
 details. ZEAL checks for an existing account with that name before continuing
 the unchanged local project.
+When setup finishes, the command exits while the Bot and ngrok keep running.
+The summary shows their PIDs, log paths, and commands to inspect or stop them.
 
 At the end, scan the QR code, send the Bot a message, and confirm the reply.
+ZEAL disables LINE's default auto-response when it enables the Webhook, so
+incoming messages receive one Bot reply. Greeting messages remain configurable.
 ZEAL creates `line-bot-<account-name>/`; edit `app.py` there to change the
 Bot's reply. Keep `.env` private.
 
 ## Other commands
 
 ```powershell
-# Keep the local Bot and ngrok running after setup
-zeal line-bot setup --keep-running
+# Stop the Bot and ngrok when setup finishes instead of leaving them running
+zeal line-bot setup --stop-after-setup
 
 # Set up a local Bot project for an existing LINE Messaging API channel
 zeal line-bot resume

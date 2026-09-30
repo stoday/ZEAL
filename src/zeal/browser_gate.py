@@ -38,7 +38,13 @@ GATE_SCRIPT = r"""
   function render() {
     if (!veil) return;
     veil.style.background = state.mode === 'automation' ? 'rgba(16,24,40,.18)' : 'transparent';
+    veil.style.alignItems = state.mode === 'automation' ? 'flex-start' : 'flex-end';
+    veil.style.justifyContent = state.mode === 'automation' ? 'center' : 'flex-start';
+    veil.style.padding = state.mode === 'automation' ? '18px' : '12px';
     label.style.background = state.mode === 'automation' ? '#17212e' : '#176247';
+    label.style.maxWidth = state.mode === 'automation' ? 'min(90vw,560px)' : 'min(45vw,320px)';
+    label.style.padding = state.mode === 'automation' ? '12px 18px' : '8px 12px';
+    label.style.fontSize = state.mode === 'automation' ? '16px' : '13px';
     label.textContent = state.message;
   }
   window.__zealGate = {
@@ -103,10 +109,11 @@ class BrowserGate:
             None,
         )
         if self.human_page is not None:
-            self._attach(self.human_page).send(
-                "Input.setIgnoreInputEvents", {"ignore": False}
-            )
-            self._render(self.human_page)
+            with contextlib.suppress(Exception):
+                self._attach(self.human_page).send(
+                    "Input.setIgnoreInputEvents", {"ignore": False}
+                )
+                self._render(self.human_page)
 
     def _render(self, page: Any) -> None:
         permitted = self.mode == "human" and page is self.human_page

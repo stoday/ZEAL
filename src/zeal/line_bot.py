@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import contextlib
 import getpass
+import hashlib
 import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
@@ -33,6 +36,7 @@ LINE_MANAGER_URL = "https://manager.line.biz/"
 LINE_CONSOLE_URL = "https://developers.line.biz/console/"
 LINE_OFFICIAL_ACCOUNT_ENTRY_URL = "https://entry.line.biz/form/entry/unverified"
 NGROK_DOWNLOAD_BASE = "https://bin.equinox.io/c/bNyj1mQVY4c"
+NGROK_AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 
 # These are detection hints, not selectors to click.  A match always hands the
 # browser to the account holder; ZEAL never attempts to solve a challenge.
@@ -61,6 +65,61 @@ ACCOUNT_CREATED_MARKERS = (
     "帳號已建立",
 )
 NEW_PROVIDER_OPTION = "建立新的 Provider"
+LINE_CONTINUE_BUTTON = re.compile(
+    r"^\s*了解並繼續使用(?:[\s/]*I understand and want to proceed)?\s*$",
+    re.IGNORECASE,
+)
+MANAGER_WELCOME_TITLE = re.compile(r"^Welcome!\s*\([12]/2\)$", re.IGNORECASE)
+MANAGER_WELCOME_STEP = re.compile(r"Welcome!\s*\(([12])/2\)", re.IGNORECASE)
+
+
+def _terminal_supports_color() -> bool:
+    """Use color only in an interactive terminal that can display ANSI codes."""
+    if (
+        not sys.stdout.isatty()
+        or "NO_COLOR" in os.environ
+        or os.environ.get("CLICOLOR") == "0"
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return False
+    if os.name != "nt":
+        return True
+
+    # Windows Console needs virtual terminal processing for ANSI sequences.
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetStdHandle.argtypes = [ctypes.c_int]
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    kernel32.GetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    handle = kernel32.GetStdHandle(-11)
+    mode = ctypes.c_uint32()
+    if not handle or not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return False
+    return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+
+
+def _accent(text: str, color: str) -> str:
+    if not _terminal_supports_color():
+        return text
+    return f"\x1b[{color}m{text}\x1b[0m"
+
+
+def _human_notice(message: str) -> None:
+    print(f"{_accent('請你操作', '33;1')}｜{message}")
+
+
+def _terminal_link(url: str) -> str:
+    """Make a link clickable in terminals with OSC 8, retaining a plain URL elsewhere."""
+    if _terminal_supports_color() and (
+        os.environ.get("WT_SESSION")
+        or os.environ.get("TERM_PROGRAM") in {"vscode", "iTerm.app", "WezTerm"}
+        or os.environ.get("KONSOLE_VERSION")
+    ):
+        return f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
+    return url
+
 
 class SetupError(RuntimeError):
     """A setup step could not safely continue."""
@@ -86,10 +145,42 @@ def option_from_choice(choice: str, options: tuple[str, ...] | list[str]) -> str
     raise SetupError("請輸入清單中的編號或完整選項名稱。")
 
 
-def prompt_option(label: str, options: tuple[str, ...] | list[str]) -> str:
+def _display_width(value: str) -> int:
+    """Measure CJK labels in terminal cells for aligned menu columns."""
+    return sum(
+        0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+        for char in value
+    )
+
+
+def _option_rows(options: tuple[str, ...] | list[str], terminal_width: int) -> list[str]:
+    number_width = max(2, len(str(len(options))))
+    entries = [f"  {index:>{number_width}}. {option}" for index, option in enumerate(options, start=1)]
+    if len(entries) < 2:
+        return entries
+
+    left, right = entries[::2], entries[1::2]
+    left_width = max(map(_display_width, left))
+    right_width = max(map(_display_width, right))
+    if left_width + 3 + right_width > terminal_width:
+        return entries
+    return [
+        left_entry + " " * (left_width - _display_width(left_entry) + 3) + right_entry
+        for left_entry, right_entry in zip(left, right)
+    ] + left[len(right):]
+
+
+def prompt_option(
+    label: str, options: tuple[str, ...] | list[str], *, two_columns: bool = False
+) -> str:
     print(f"\n{label}：")
-    for index, option in enumerate(options, start=1):
-        print(f"  {index:>2}. {option}")
+    rows = (
+        _option_rows(options, shutil.get_terminal_size(fallback=(100, 24)).columns)
+        if two_columns
+        else [f"  {index:>2}. {option}" for index, option in enumerate(options, start=1)]
+    )
+    for row in rows:
+        print(row)
     while True:
         try:
             return option_from_choice(input(f"{label}（輸入編號或完整名稱）："), options)
@@ -99,8 +190,6 @@ def prompt_option(label: str, options: tuple[str, ...] | list[str]) -> str:
 
 def prompt_provider_choice(options: tuple[str, ...]) -> tuple[str | None, str | None]:
     """Let the account holder choose an irreversible Provider at the last responsible moment."""
-    if not options:
-        raise SetupError("LINE 沒有提供可選的既有 Provider。")
     choice = prompt_option("LINE Provider", (*options, NEW_PROVIDER_OPTION))
     if choice != NEW_PROVIDER_OPTION:
         return choice, None
@@ -178,6 +267,19 @@ def prompt_account_details(port: int) -> AccountDetails:
     )
 
 
+def confirm_setup_start() -> None:
+    """Explain the guided setup before collecting data or changing anything."""
+    print(f"\n{_accent('◆ ZEAL 將協助您申請 LINE 官方帳號，並建立一個能回覆訊息的簡易機器人。', '36;1')}")
+    print("ZEAL 會代您開啟並操作瀏覽器、填寫申請資料；需要登入或人類驗證時，會請您親自操作。")
+    print()
+    if input("若同意開始，請按 Enter；按 Ctrl+C 取消：").strip():
+        raise SetupError("尚未開始設定；同意時請直接按 Enter。")
+
+
+def setup_step(number: int, description: str) -> None:
+    print(f"\n{_accent(f'[步驟 {number}/8] {description}', '36;1')}")
+
+
 def project_directory(base: Path, account_name: str) -> Path:
     """Make a readable, cross-platform-safe project directory name."""
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", account_name)
@@ -192,6 +294,7 @@ def generated_app() -> str:
 import hashlib
 import hmac
 import os
+from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
@@ -202,6 +305,10 @@ load_dotenv()
 app = Flask(__name__)
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+
+
+def log_event(message: str) -> None:
+    print(f"[{datetime.now().astimezone():%Y-%m-%d %H:%M:%S%z}] {message}", flush=True)
 
 
 def valid_signature(body: bytes, signature: str) -> bool:
@@ -233,20 +340,34 @@ def callback():
     raw_body = request.get_data()
     signature = request.headers.get("X-Line-Signature", "")
     if not valid_signature(raw_body, signature):
+        log_event("拒絕 Webhook：簽章驗證失敗")
         abort(400)
 
-    for event in (request.get_json(silent=True) or {}).get("events", []):
+    events = (request.get_json(silent=True) or {}).get("events", [])
+    if not events:
+        log_event("收到 LINE Webhook 驗證請求，沒有訊息事件")
+    for event in events:
         if event.get("type") != "message":
+            log_event("略過非訊息事件")
             continue
         if event.get("message", {}).get("type") != "text":
+            log_event("略過非文字訊息")
             continue
-        reply(event["replyToken"], f"你說的是：{event['message']['text']}")
+        log_event("收到文字訊息，正在回覆")
+        try:
+            reply(event["replyToken"], f"你說的是：{event['message']['text']}")
+        except requests.RequestException:
+            log_event("回覆 LINE API 失敗，請查看下方錯誤")
+            raise
+        log_event("已送出文字回覆")
 
     return "OK", 200
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    port = int(os.getenv("PORT", "8000"))
+    log_event(f"Bot 已啟動，等待 LINE Webhook（port {port}）")
+    app.run(host="0.0.0.0", port=port)
 '''
 
 
@@ -329,9 +450,9 @@ def format_completion_summary(
     webhook_state = "已儲存、Verify 成功並啟用 Use webhook" if webhook_configured else "尚待在 Console 手動確認"
     company_name = account.company_name or "未提供"
     runtime_state = (
-        "Bot 與 ngrok：持續在目前終端背景執行；以 Ctrl+C 結束。"
+        "Bot 與 ngrok：指令結束後持續在背景執行。"
         if keep_running
-        else "Bot 與 ngrok：此摘要顯示後將停止；下次測試前需重新啟動。"
+        else "本次啟動的 Bot 與 ngrok：此摘要顯示後將停止。"
     )
     return "\n".join(
         (
@@ -355,6 +476,57 @@ def format_completion_summary(
             "====================================",
         )
     )
+
+
+def format_runtime_instructions(
+    bot_pid: int, ngrok_pid: int | None, log_directory: Path
+) -> str:
+    """Show how to inspect and stop the exact services left by this setup."""
+    pids = [bot_pid, *([ngrok_pid] if ngrok_pid is not None else [])]
+    bot_log = log_directory / "bot.log"
+    ngrok_log = log_directory / "ngrok.log"
+    lines = [
+        "\n背景程序已啟動：",
+        f"Bot PID：{bot_pid}；日誌：{bot_log}",
+        (
+            f"ngrok PID：{ngrok_pid}；日誌：{ngrok_log}"
+            if ngrok_pid is not None
+            else "ngrok：使用已執行的連線；請從原先啟動 ngrok 的位置查看日誌與 PID。"
+        ),
+    ]
+    if os.name == "nt":
+        joined = ",".join(str(pid) for pid in pids)
+        quoted_bot_log = str(bot_log).replace("'", "''")
+        lines.extend(
+            (
+                f"PowerShell 查看程序：Get-Process -Id {joined}",
+                f"PowerShell 查看 Bot 日誌：Get-Content -Tail 30 -Wait -LiteralPath '{quoted_bot_log}'",
+                f"PowerShell 停止本次啟動的程序：Stop-Process -Id {joined}",
+            )
+        )
+        if ngrok_pid is not None:
+            quoted_ngrok_log = str(ngrok_log).replace("'", "''")
+            lines.append(
+                f"PowerShell 查看 ngrok 日誌：Get-Content -Tail 30 -Wait -LiteralPath '{quoted_ngrok_log}'"
+            )
+        else:
+            lines.append("PowerShell 查找既有 ngrok：Get-Process -Name ngrok")
+            lines.append("PowerShell 確認 PID 後停止既有 ngrok：Stop-Process -Id <ngrok PID>")
+    else:
+        joined = ",".join(str(pid) for pid in pids)
+        lines.extend(
+            (
+                f"查看程序：ps -p {joined} -o pid,command",
+                f"查看 Bot 日誌：tail -f {shlex.quote(str(bot_log))}",
+                f"停止本次啟動的程序：kill {' '.join(str(pid) for pid in pids)}",
+            )
+        )
+        if ngrok_pid is not None:
+            lines.append(f"查看 ngrok 日誌：tail -f {shlex.quote(str(ngrok_log))}")
+        else:
+            lines.append("查找既有 ngrok：pgrep -af ngrok")
+            lines.append("確認 PID 後停止既有 ngrok：kill <ngrok PID>")
+    return "\n".join(lines)
 
 
 def prompt_existing_credentials() -> Credentials:
@@ -399,6 +571,37 @@ def zeal_data_directory() -> Path:
     if platform.system().lower() == "darwin":
         return Path.home() / "Library" / "Application Support" / "Zeal"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "zeal"
+
+
+def runtime_log_directory(project: Path) -> Path:
+    """Store process output outside the generated project and Git worktree."""
+    project_key = hashlib.sha256(os.fsencode(str(project.resolve()))).hexdigest()[:12]
+    directory = zeal_data_directory() / "runtime" / project_key
+    directory.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        directory.chmod(0o700)
+    return directory
+
+
+def start_background_process(command: list[str], log_path: Path, *, cwd: Path | None = None) -> subprocess.Popen[str]:
+    """Keep a service alive after the ZEAL command exits, with readable logs."""
+    options: dict[str, Any] = {"start_new_session": os.name != "nt"}
+    if os.name == "nt":
+        options["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    with log_path.open("ab") as output:
+        with contextlib.suppress(OSError):
+            log_path.chmod(0o600)
+        return subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            **options,
+        )
 
 
 def default_browser_profile_directory() -> Path:
@@ -467,18 +670,29 @@ def configure_ngrok(binary: Path, token: str) -> None:
         raise SetupError("ngrok Authtoken 設定失敗；請確認 token 後重試。")
 
 
-def tunnel_url(binary: Path, port: int) -> tuple[subprocess.Popen[str], str]:
-    process = subprocess.Popen(
-        [str(binary), "http", str(port), "--log=stdout"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+def ensure_ngrok_config(binary: Path, argument_token: str | None) -> None:
+    """Reuse a working ngrok login, unless the caller supplied a new token."""
+    token = argument_token or os.environ.get("NGROK_AUTHTOKEN")
+    if token:
+        configure_ngrok(binary, token)
+        return
+    result = subprocess.run(
+        [str(binary), "config", "check"], capture_output=True, text=True, check=False
+    )
+    if result.returncode:
+        configure_ngrok(binary, ngrok_authtoken(None))
+
+
+def tunnel_url(binary: Path, port: int, project: Path) -> tuple[subprocess.Popen[str], str]:
+    log_path = runtime_log_directory(project) / "ngrok.log"
+    process = start_background_process(
+        [str(binary), "http", str(port), "--log=stdout"], log_path
     )
     inspector = "http://127.0.0.1:4040/api/tunnels"
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise SetupError("ngrok 啟動後立即結束。請檢查網路或 Authtoken。")
+            raise SetupError(f"ngrok 啟動後立即結束；請查看日誌：{log_path}")
         try:
             with urllib.request.urlopen(inspector, timeout=2) as response:
                 tunnels = json.load(response).get("tunnels", [])
@@ -487,14 +701,14 @@ def tunnel_url(binary: Path, port: int) -> tuple[subprocess.Popen[str], str]:
             continue
         for tunnel in tunnels:
             public_url = tunnel.get("public_url", "")
-            if public_url.startswith("https://"):
+            if public_url.startswith("https://") and process.poll() is None:
                 return process, public_url
         time.sleep(0.5)
     process.terminate()
-    raise SetupError("30 秒內無法從 ngrok 取得 HTTPS 公開網址。")
+    raise SetupError(f"30 秒內無法從 ngrok 取得 HTTPS 公開網址；請查看日誌：{log_path}")
 
 
-def existing_tunnel_url() -> str | None:
+def existing_tunnel_url(port: int | None = None) -> str | None:
     """Return an HTTPS tunnel already served by the local ngrok inspector."""
     try:
         with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=2) as response:
@@ -503,8 +717,11 @@ def existing_tunnel_url() -> str | None:
         return None
     for tunnel in tunnels:
         public_url = tunnel.get("public_url", "")
-        if public_url.startswith("https://"):
-            return public_url
+        address = str((tunnel.get("config") or {}).get("addr", ""))
+        with contextlib.suppress(ValueError):
+            location = urllib.parse.urlsplit(address if "://" in address else f"//{address}")
+            if public_url.startswith("https://") and (port is None or location.port == port):
+                return public_url
     return None
 
 
@@ -513,12 +730,10 @@ def target_python(directory: Path) -> Path:
 
 
 def start_app(directory: Path) -> subprocess.Popen[str]:
-    return subprocess.Popen(
+    return start_background_process(
         [str(target_python(directory)), "app.py"],
+        runtime_log_directory(directory) / "bot.log",
         cwd=directory,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
 
 
@@ -544,35 +759,6 @@ def ensure_target_dependencies(directory: Path) -> None:
         raise SetupError("無法安裝 Bot 專案套件。請確認目前 Python 環境有 pip 與網路連線。")
 
 
-def _page_values(page: Any) -> list[str]:
-    values: list[str] = []
-    for item in page.locator("input").all():
-        with contextlib.suppress(Exception):
-            value = item.input_value()
-            if value:
-                values.append(value.strip())
-    with contextlib.suppress(Exception):
-        values.extend(match.strip() for match in page.locator("body").inner_text().split())
-    return values
-
-
-def extract_credentials(pages: list[Any]) -> Credentials | None:
-    """Extract only values with the expected shapes; never print them."""
-    secret_pattern = re.compile(r"^[0-9a-fA-F]{32}$")
-    token_pattern = re.compile(r"^[A-Za-z0-9._~+/=-]{40,}$")
-    secrets: list[str] = []
-    tokens: list[str] = []
-    for page in pages:
-        for value in _page_values(page):
-            if secret_pattern.fullmatch(value):
-                secrets.append(value)
-            elif token_pattern.fullmatch(value):
-                tokens.append(value)
-    if not secrets or not tokens:
-        return None
-    return Credentials(channel_secret=secrets[-1], channel_access_token=tokens[-1])
-
-
 def human_verification_reason(page_text: str) -> str | None:
     """Return a human-only checkpoint found in visible page text, if any."""
     normalized = page_text.casefold()
@@ -584,6 +770,16 @@ def human_verification_reason(page_text: str) -> str | None:
 
 def channel_id_from_url(url: str) -> str | None:
     match = re.search(r"/channel/(\d{6,})/messaging-api(?:[/?#]|$)", url)
+    return match.group(1) if match else None
+
+
+def channel_id_from_settings_text(page_text: str) -> str | None:
+    """Read the labeled Channel ID shown in Manager's Messaging API settings."""
+    match = re.search(
+        r"(?:Channel\s*ID|頻道\s*ID|チャネル\s*ID)\s*[:：]?\s*(\d{6,})(?!\d)",
+        page_text,
+        re.IGNORECASE,
+    )
     return match.group(1) if match else None
 
 
@@ -699,7 +895,8 @@ class LineConsoleBrowser:
     def _hand_off_human_verification(self, page: Any, reason: str) -> Any:
         """Let the account holder solve a challenge in the current browser page."""
         self._give_user_control(page, "現在可由你完成 LINE 的驗證")
-        print(f"\n偵測到「{reason}」。請在目前的 LINE 瀏覽器完成人類驗證。")
+        print()
+        _human_notice(f"偵測到「{reason}」。請在目前的 LINE 瀏覽器完成人類驗證。")
         try:
             input("完成驗證後按 Enter，ZEAL 會在同一個瀏覽器繼續：")
         finally:
@@ -713,6 +910,8 @@ class LineConsoleBrowser:
         page.goto(url, wait_until="domcontentloaded")
         self._automate(f"ZEAL 正在開啟 {purpose}")
         self._accept_information_use_consent(page)
+        self._acknowledge_line_continue(page)
+        self._dismiss_manager_welcome(page)
         reason = human_verification_reason(self._page_text(page))
         if reason:
             page = self._hand_off_human_verification(page, reason)
@@ -728,38 +927,119 @@ class LineConsoleBrowser:
         """Accept LINE's named information-use consent when it interrupts setup."""
         if "同意我們使用您的資訊" not in self._page_text(page):
             return False
-        for candidate in (
-            page.get_by_role("button", name=re.compile(r"^同意(?:並繼續)?$")),
-            page.get_by_text("同意", exact=True),
-        ):
-            with contextlib.suppress(Exception):
-                self._act(page, lambda: candidate.last.click(timeout=8_000))
-                print("ZEAL 已按 LINE『同意我們使用您的資訊』頁面的「同意」。")
-                return True
+        print("LINE 顯示資訊使用同意頁；ZEAL 正在按「同意」。")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            for candidate in (
+                page.get_by_role("button", name=re.compile(r"^同意(?:並繼續)?$")),
+                page.get_by_text("同意", exact=True),
+            ):
+                with contextlib.suppress(Exception):
+                    self._act(page, lambda: candidate.last.click(timeout=500))
+                    print("ZEAL 已按 LINE 資訊使用同意頁的「同意」。")
+                    return True
+            self._wait_for_browser(100)
         self._show_manual_page(page.url)
         raise SetupError("LINE 資訊使用同意頁的按鈕未被辨識；請在目前的瀏覽器檢查。")
 
+    def _acknowledge_line_continue(self, page: Any) -> bool:
+        """Continue past LINE's named acknowledgement notice."""
+        host = urllib.parse.urlsplit(page.url).hostname or ""
+        if not any(host == domain or host.endswith(f".{domain}") for domain in ("line.biz", "line.me")):
+            return False
+        page_text = re.sub(r"\s+", "", self._page_text(page))
+        if "了解並繼續使用" not in page_text:
+            return False
+        print("LINE 顯示「了解並繼續使用」提示；ZEAL 正在按下該按鈕。")
+        buttons = (
+            page.get_by_role("button", name=LINE_CONTINUE_BUTTON),
+            page.get_by_text(LINE_CONTINUE_BUTTON),
+        )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            for button in buttons:
+                with contextlib.suppress(Exception):
+                    self._act(page, lambda: button.last.click(timeout=500))
+                    print("ZEAL 已按「了解並繼續使用」，接續設定。")
+                    return True
+            self._wait_for_browser(100)
+        self._show_manual_page(page.url)
+        raise SetupError("LINE「了解並繼續使用」按鈕未被辨識；請在目前的瀏覽器檢查。")
+
+    def _dismiss_manager_welcome(self, page: Any) -> bool:
+        """Close the first-run Manager tour before reaching account settings."""
+        if urllib.parse.urlsplit(page.url).hostname != "manager.line.biz":
+            return False
+        if not MANAGER_WELCOME_STEP.search(self._page_text(page)):
+            return False
+        print("LINE 顯示首次使用導覽；ZEAL 正在關閉導覽並接續設定。")
+        for _ in range(3):
+            match = MANAGER_WELCOME_STEP.search(self._page_text(page))
+            if not match:
+                return True
+            heading = page.get_by_text(MANAGER_WELCOME_TITLE).first
+            close_buttons = (
+                page.get_by_role("button", name=re.compile(r"^(Close|關閉|×|✕)$", re.I)),
+                heading.locator("xpath=ancestor::*[.//button][1]").locator("button").first,
+            )
+            for index, button in enumerate(close_buttons):
+                with contextlib.suppress(Exception):
+                    if index == 1 and button.inner_text(timeout=250).strip() not in ("", "×", "✕"):
+                        continue
+                    self._act(page, lambda: button.click(timeout=600))
+                    for _ in range(5):
+                        if not MANAGER_WELCOME_STEP.search(self._page_text(page)):
+                            print("ZEAL 已關閉 LINE 首次使用導覽。")
+                            return True
+                        self._wait_for_browser(100)
+            names = (
+                ("Next",)
+                if match.group(1) == "1"
+                else ("Done", "Finish", "Got it", "Get started", "Start using", "Close", "完成", "開始使用")
+            )
+            for name in names:
+                with contextlib.suppress(Exception):
+                    self._act(page, lambda: page.get_by_role("button", name=name, exact=True).click(timeout=600))
+                    self._wait_for_browser(100)
+                    break
+        if not MANAGER_WELCOME_STEP.search(self._page_text(page)):
+            print("ZEAL 已完成 LINE 首次使用導覽。")
+            return True
+        self._show_manual_page(page.url)
+        raise SetupError("LINE 首次使用導覽無法自動關閉；請在目前的瀏覽器檢查。")
+
     def _click_first(self, page: Any, labels: tuple[str, ...], *, required: bool = True) -> bool:
-        consent_handled = self._accept_information_use_consent(page)
-        for _ in range(2):
+        wait_seconds = 8 if required else 3
+        deadline = time.monotonic() + wait_seconds
+        acknowledged_notice = False
+        while time.monotonic() < deadline:
+            if self._accept_information_use_consent(page):
+                deadline = time.monotonic() + wait_seconds
+                continue
+            if not acknowledged_notice and self._acknowledge_line_continue(page):
+                acknowledged_notice = True
+                deadline = time.monotonic() + wait_seconds
+                continue
+            if self._dismiss_manager_welcome(page):
+                deadline = time.monotonic() + wait_seconds
+                continue
             for label in labels:
                 candidate = page.get_by_text(label, exact=True)
                 with contextlib.suppress(Exception):
-                    # click() waits for a delayed Manager/Console control.
-                    self._act(page, lambda: candidate.last.click(timeout=8_000))
+                    self._act(page, lambda: candidate.last.click(timeout=500))
                     return True
-            if consent_handled or not self._accept_information_use_consent(page):
-                break
-            consent_handled = True
+            self._wait_for_browser(100)
         if required:
             self._show_manual_page(page.url)
-            raise SetupError("LINE 介面未被安全辨識；請在目前的瀏覽器手動完成。")
+            raise SetupError(f"找不到 LINE 操作「{labels[0]}」；請在目前的瀏覽器檢查。")
         return False
 
     def _provider_options(self, page: Any) -> tuple[str, ...]:
         """Extract displayed Provider labels from LINE's current selection controls."""
         options: list[str] = []
         for radio in page.locator('input[type="radio"]').all():
+            if radio.get_attribute("value") == "0":
+                continue  # The first radio opens the separate New provider form.
             label = ""
             with contextlib.suppress(Exception):
                 label = radio.locator("xpath=following-sibling::label[1]").inner_text().strip()
@@ -770,18 +1050,32 @@ class LineConsoleBrowser:
                 options.append(label)
         return tuple(options)
 
+    def _manager_account_is_open(self, page: Any, account_name: str) -> bool:
+        """Avoid reselecting the account when Manager already shows its home."""
+        if urllib.parse.urlsplit(page.url).hostname != "manager.line.biz":
+            return False
+        text = self._page_text(page)
+        return (
+            account_name in text
+            and any(label in text for label in ("Settings", "設定"))
+            and any(label in text for label in ("Home", "首頁", "ホーム"))
+        )
+
     def existing_official_account(self, account_name: str) -> bool:
         """Check LINE's live account list before retrying an interrupted setup."""
         page = self.open_authenticated_page(LINE_MANAGER_URL, "確認既有 LINE 官方帳號")
-        for _ in range(2):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
             for candidate in (page, *reversed(self.pages)):
+                self._accept_information_use_consent(candidate)
+                self._acknowledge_line_continue(candidate)
+                self._dismiss_manager_welcome(candidate)
                 with contextlib.suppress(Exception):
                     candidate.get_by_text(account_name, exact=True).first.wait_for(
-                        state="visible", timeout=10_000
+                        state="visible", timeout=250
                     )
                     return True
-            if not any(self._accept_information_use_consent(candidate) for candidate in self.pages):
-                break
+            self._wait_for_browser(100)
         return False
 
     def fill_official_account_form(self, account: AccountDetails, form_page: Any) -> str:
@@ -809,7 +1103,7 @@ class LineConsoleBrowser:
         if not major_options:
             raise SetupError("LINE 表單目前沒有可選的業種大分類。")
 
-        major_category = prompt_option("業種大分類", major_options)
+        major_category = prompt_option("業種大分類", major_options, two_columns=True)
         try:
             self._act(form_page, lambda: major_select.select_option(label=major_category))
             # LINE populates the dependent select asynchronously.  Waiting for
@@ -828,7 +1122,7 @@ class LineConsoleBrowser:
         if not minor_options:
             raise SetupError("此業種目前沒有可選的小分類；請在瀏覽器手動確認。")
 
-        minor_category = prompt_option("業種小分類", minor_options)
+        minor_category = prompt_option("業種小分類", minor_options, two_columns=True)
         try:
             self._act(form_page, lambda: minor_select.select_option(label=minor_category))
         except Exception as error:
@@ -853,7 +1147,7 @@ class LineConsoleBrowser:
             if not self.pages or all(candidate.is_closed() for candidate in self.pages):
                 raise SetupError("LINE 瀏覽器已關閉；請重新執行設定。")
             if not announced_login:
-                print("若 LINE 要求登入、OTP/MFA 或 CAPTCHA，請在瀏覽器完成；ZEAL 會自動接續。")
+                _human_notice("若 LINE 要求登入、OTP/MFA 或 CAPTCHA，請在瀏覽器完成；ZEAL 會自動接續。")
                 announced_login = True
 
     def _wait_for_entry_form(self, *, seconds: int) -> Any | None:
@@ -949,7 +1243,7 @@ class LineConsoleBrowser:
                 if not self.pages:
                     raise SetupError("LINE 驗證頁面已遺失；請確認官方帳號是否已建立。")
                 self._give_user_control(self.pages[-1], "現在可由你完成 LINE 的驗證")
-                print(f"LINE 要求「{reason}」；請只完成人類驗證，不必按確認頁的「完成」。")
+                _human_notice(f"LINE 要求「{reason}」；請只完成人類驗證，不必按確認頁的「完成」。")
                 try:
                     input("驗證完成後按 Enter，ZEAL 會在同一個瀏覽器接手：")
                 finally:
@@ -978,12 +1272,26 @@ class LineConsoleBrowser:
         """
         page = self.open_authenticated_page(LINE_MANAGER_URL, "開啟 LINE Official Account Manager")
         self._automate("ZEAL 正在啟用 Messaging API")
-        self._click_first(page, (account_name,))
+        if not self._manager_account_is_open(page, account_name):
+            self._click_first(page, (account_name,))
+        self._click_first(page, ("Settings", "設定"))
         self._click_first(page, ("Messaging API", "Messaging API設定", "Messaging API settings"))
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            channel_id = channel_id_from_settings_text(self._page_text(page))
+            if channel_id:
+                return MessagingApiSetup(channel_id=channel_id, provider="既有 Provider")
+            if "Enable Messaging API" in self._page_text(page) or "啟用 Messaging API" in self._page_text(page):
+                break
+            self._wait_for_browser(100)
         self._click_first(page, ("Enable Messaging API", "啟用 Messaging API", "Messaging APIを利用する"))
 
+        deadline = time.monotonic() + 8
         options = self._provider_options(page)
-        if not options:
+        while not options and time.monotonic() < deadline:
+            self._wait_for_browser(100)
+            options = self._provider_options(page)
+        if not options and "New provider" not in self._page_text(page):
             self._show_manual_page(page.url)
             raise SetupError("無法讀取 Provider 清單；請在目前的瀏覽器手動完成。")
         provider, create_provider = prompt_provider_choice(options)
@@ -997,12 +1305,19 @@ class LineConsoleBrowser:
             self._act(page, lambda: field.last.fill(create_provider))
         else:
             self._click_first(page, (provider or "",))
-        self._click_first(page, ("Confirm", "Create", "建立", "確定"))
+        self._click_first(page, ("Agree", "Confirm", "Create", "建立", "確定"))
+        self._click_first(page, ("OK",))  # Optional Privacy Policy and Terms of Use.
+        self._click_first(page, ("OK",))  # Confirm the account and Provider link.
 
         reason = human_verification_reason(self._page_text(page))
         if reason:
             page = self._hand_off_human_verification(page, reason)
-        channel_id = channel_id_from_url(page.url)
+        deadline = time.monotonic() + 8
+        channel_id = None
+        while time.monotonic() < deadline and not channel_id:
+            channel_id = channel_id_from_url(page.url) or channel_id_from_settings_text(self._page_text(page))
+            if not channel_id:
+                self._wait_for_browser(200)
         if not channel_id:
             page = self.open_authenticated_page(LINE_CONSOLE_URL, "確認 Messaging API channel")
             channel_id = channel_id_from_url(page.url)
@@ -1015,15 +1330,30 @@ class LineConsoleBrowser:
         """Read credentials from the Messaging API page without printing them."""
         page = self.open_authenticated_page(messaging_api_url(channel_id), "讀取 Messaging API 憑證")
         self._automate("ZEAL 正在讀取 Channel 憑證")
-        credentials = extract_credentials(self.pages)
-        if credentials:
-            return credentials
-        self._click_first(page, ("Issue", "發行", "発行"), required=False)
-        credentials = extract_credentials(self.pages)
-        if credentials:
-            return credentials
-        self._show_manual_page(page.url)
-        raise SetupError("無法自動讀取或發行兩個憑證；請在目前的瀏覽器手動處理。")
+        token_pattern = re.compile(r"Channel access token \(long-lived\)\s+([A-Za-z0-9._~+/=-]{40,})")
+        deadline = time.monotonic() + 8
+        token_match = None
+        while time.monotonic() < deadline and not token_match:
+            token_match = token_pattern.search(self._page_text(page))
+            if not token_match:
+                self._wait_for_browser(100)
+        if not token_match:
+            self._show_manual_page(page.url)
+            raise SetupError("無法讀取 Channel access token；請在目前的瀏覽器檢查。")
+        token = token_match.group(1)
+
+        self._act(page, lambda: page.get_by_role("button", name="Basic settings", exact=True).click(timeout=8_000))
+        secret_pattern = re.compile(r"Channel secret\s+([0-9a-fA-F]{32})")
+        deadline = time.monotonic() + 8
+        secret_match = None
+        while time.monotonic() < deadline and not secret_match:
+            secret_match = secret_pattern.search(self._page_text(page))
+            if not secret_match:
+                self._wait_for_browser(100)
+        if not secret_match:
+            self._show_manual_page(page.url)
+            raise SetupError("無法讀取 Channel secret；請在目前的瀏覽器檢查。")
+        return Credentials(channel_secret=secret_match.group(1), channel_access_token=token)
 
     def configure_webhook(self, webhook_url: str, channel_id: str | None = None) -> bool:
         """Set, verify, and enable a webhook after the user has signed in locally."""
@@ -1033,26 +1363,78 @@ class LineConsoleBrowser:
             "設定 Webhook",
         )
         self._automate("ZEAL 正在設定 Webhook")
+        stage = "開啟編輯"
         try:
             self._act(page, lambda: page.get_by_role("button", name=re.compile("^Edit$", re.I)).click(timeout=8_000))
+            stage = "填寫網址"
             field = page.get_by_role(
                 "textbox", name=re.compile("webhook URL", re.I)
             )
             if field.count() == 0:
                 field = page.locator('textarea[placeholder*="webhook" i]')
             self._act(page, lambda: field.last.fill(webhook_url))
+            stage = "儲存網址"
             self._act(page, lambda: page.get_by_role("button", name=re.compile("^(Update|Save)$", re.I)).click(timeout=8_000))
+            stage = "驗證網址"
             self._act(page, lambda: page.get_by_role("button", name=re.compile("^Verify$", re.I)).click(timeout=10_000))
-            page.get_by_text(re.compile("^Success$", re.I)).wait_for(timeout=10_000)
+            stage = "確認驗證結果"
+            page.get_by_text("Success", exact=True).wait_for(timeout=20_000)
+            stage = "關閉驗證結果"
             self._act(page, lambda: page.get_by_role("button", name=re.compile("^OK$", re.I)).click(timeout=5_000))
 
-            use_webhook = page.get_by_text(re.compile("^Use webhook$", re.I))
+            stage = "啟用 Webhook"
+            use_webhook = page.get_by_text("Use webhook", exact=True)
             webhook_row = use_webhook.locator("xpath=..")
             webhook_input = webhook_row.locator('input[name="active"]')
             if not webhook_input.is_checked():
                 self._act(page, lambda: webhook_row.locator("label[for]").click(timeout=5_000))
             return webhook_input.is_checked()
-        except Exception:
+        except Exception as error:
+            print(f"Webhook 自動設定停在「{stage}」（{type(error).__name__}）。", file=sys.stderr)
+            return False
+
+    def disable_auto_response_messages(self, account_name: str) -> bool:
+        """Prevent Manager's default reply from duplicating the Bot's reply."""
+        try:
+            page = self.open_authenticated_page(LINE_MANAGER_URL, "關閉 LINE 預設自動回覆")
+            if not self._manager_account_is_open(page, account_name):
+                self._click_first(page, (account_name,))
+            self._click_first(page, ("Settings", "設定"))
+            self._click_first(page, ("Response settings", "回應設定"))
+            if not page.url.endswith("/setting/response"):
+                return False
+
+            webhook = page.locator('div.webhook-setting shared-switch input[type="checkbox"]')
+            auto_reply = page.locator('div.auto-response-setting shared-switch input[type="checkbox"]')
+            if webhook.count() != 1 or auto_reply.count() != 1:
+                return False
+
+            def loaded() -> bool:
+                for _ in range(40):
+                    if webhook.is_checked():
+                        return True
+                    self._wait_for_browser(200)
+                return False
+
+            if not loaded():
+                return False
+            if auto_reply.is_checked():
+                toggle = page.locator('div.auto-response-setting shared-switch label[data-scope="switch"]')
+                if toggle.count() != 1:
+                    return False
+                self._act(page, lambda: toggle.click(timeout=5_000))
+                for _ in range(20):
+                    if not auto_reply.is_checked():
+                        break
+                    self._wait_for_browser(200)
+                if auto_reply.is_checked():
+                    return False
+                self._wait_for_browser(400)
+
+            page.reload(wait_until="domcontentloaded")
+            return loaded() and not auto_reply.is_checked()
+        except Exception as error:
+            print(f"無法確認 LINE 預設自動回覆已關閉（{type(error).__name__}）。", file=sys.stderr)
             return False
 
 
@@ -1068,7 +1450,16 @@ def stop_process(process: subprocess.Popen[str] | None) -> None:
 
 def run_setup(args: Any) -> None:
     """Run `zeal line-bot setup`."""
-    account = prompt_account_details(args.port)
+    try:
+        confirm_setup_start()
+        setup_step(1, "輸入官方帳號資料，建立本機 Bot 專案。")
+        account = prompt_account_details(args.port)
+    except (KeyboardInterrupt, EOFError):
+        print("\n已取消，尚未建立專案或啟動程序。")
+        return
+    except SetupError as error:
+        print(f"\n設定未完成：{error}", file=sys.stderr)
+        return
     output_root = (args.output or Path.cwd()).resolve()
     destination = project_directory(output_root, account.name)
     try:
@@ -1080,13 +1471,23 @@ def run_setup(args: Any) -> None:
 
     ngrok: subprocess.Popen[str] | None = None
     app: subprocess.Popen[str] | None = None
+    completed = False
     try:
-        binary = install_ngrok()
-        configure_ngrok(binary, ngrok_authtoken(args.ngrok_authtoken))
-        ngrok, public_url = tunnel_url(binary, account.port)
+        setup_step(2, "準備 ngrok 公開 HTTPS 網址，供 LINE 呼叫本機 Bot。")
+        print(f"取得 ngrok Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
+        public_url = existing_tunnel_url(account.port)
+        if public_url:
+            print("已找到連往相同本機埠的 ngrok；沿用目前執行中的連線。")
+        else:
+            if existing_tunnel_url() is not None:
+                raise SetupError("已有指向其他本機埠的 ngrok；請先確認或停止該連線，再重新執行。")
+            binary = install_ngrok()
+            ensure_ngrok_config(binary, args.ngrok_authtoken)
+            ngrok, public_url = tunnel_url(binary, account.port, destination)
         callback_url = f"{public_url}/callback"
-        print(f"ngrok 公開網址：{public_url}")
+        print(f"ngrok 公開網址：{_terminal_link(public_url)}")
 
+        setup_step(3, "開啟 LINE 瀏覽器，建立或接續官方帳號；登入與人類驗證由你完成。")
         with LineConsoleBrowser(args.skip_browser_install, args.browser_profile) as browser:
             account_exists = reused and browser.existing_official_account(account.name)
             if account_exists:
@@ -1109,27 +1510,38 @@ def run_setup(args: Any) -> None:
                 form_page = browser.begin_account_creation(account)
                 browser.submit_account_creation(form_page)
                 browser.continue_after_account_creation()
+            setup_step(4, "啟用 Messaging API，並請你選擇 LINE Provider。")
             messaging = browser.enable_messaging_api(account.name)
+            setup_step(5, "讀取 LINE Channel 憑證，寫入本機私有的 .env。")
             credentials = browser.wait_for_credentials(messaging.channel_id)
             write_credentials(destination, credentials, account.port)
             print("已安全寫入 .env（未在終端輸出密鑰）。")
 
+            setup_step(6, "安裝 Bot 相依套件並在背景啟動回覆程式。")
             ensure_target_dependencies(destination)
             app = start_app(destination)
             time.sleep(1)
             if app.poll() is not None:
-                raise SetupError("Bot 程式未能啟動。請檢查產生專案的 .env 與相依套件。")
+                raise SetupError(f"Bot 程式未能啟動；請查看日誌：{runtime_log_directory(destination) / 'bot.log'}")
 
-            configured = browser.configure_webhook(callback_url)
+            setup_step(7, "設定 LINE Webhook，驗證並啟用訊息事件。")
+            configured = browser.configure_webhook(callback_url, messaging.channel_id)
             if configured:
                 print("已送出 Webhook URL、Verify 與 Use webhook 操作。請在瀏覽器確認 Verify 顯示 Success。")
+                if browser.disable_auto_response_messages(account.name):
+                    print("已關閉 LINE 預設自動回覆，避免與 Bot 同時回覆。")
+                else:
+                    print("請到 LINE Manager → Settings → Response settings，關閉 Auto-response messages，避免重複回覆。")
             else:
                 print("LINE Console 介面未被安全辨識；請手動貼上並驗證下列 Webhook URL：")
                 print(callback_url)
 
+            setup_step(8, "用手機加好友並傳送訊息，確認 Bot 回覆。")
             if browser.pages:
                 browser._give_user_control(browser.pages[-1], "現在可由你檢查 LINE 設定並測試 Bot")
-            input("用手機掃 QR Code 加好友，傳送任意文字並確認收到回聲後，按 Enter 結束：")
+            input("用手機掃 QR Code 加好友並確認收到回覆後，按 Enter 顯示結果：")
+            if app.poll() is not None or (ngrok is not None and ngrok.poll() is not None):
+                raise SetupError("Bot 或 ngrok 已停止；請查看 ZEAL 執行日誌後重試。")
             print(format_completion_summary(
                 account,
                 destination,
@@ -1138,16 +1550,20 @@ def run_setup(args: Any) -> None:
                 webhook_configured=configured,
                 keep_running=args.keep_running,
             ))
-    except KeyboardInterrupt:
+            if args.keep_running:
+                print(format_runtime_instructions(
+                    app.pid, ngrok.pid if ngrok is not None else None,
+                    runtime_log_directory(destination),
+                ))
+            completed = True
+    except (KeyboardInterrupt, EOFError):
         print("\n已取消。已建立的專案會保留；若已寫入 .env，請自行決定是否保留。")
     except SetupError as error:
         print(f"\n設定未完成：{error}", file=sys.stderr)
     finally:
-        if not args.keep_running:
+        if not completed or not args.keep_running:
             stop_process(app)
             stop_process(ngrok)
-        elif app and ngrok:
-            print("app.py 與 ngrok 仍在本終端背景執行；按 Ctrl+C 結束 ZEAL 不會自動停止它們。")
 
 
 def run_resume(args: Any) -> None:
@@ -1173,11 +1589,11 @@ def run_resume(args: Any) -> None:
     if app.poll() is not None:
         raise SetupError("Bot 程式未能啟動。請檢查產生專案的 .env 與相依套件。")
 
-    public_url = args.webhook_url or existing_tunnel_url()
+    public_url = args.webhook_url or existing_tunnel_url(args.port)
     if public_url is None:
         binary = install_ngrok()
-        configure_ngrok(binary, ngrok_authtoken(args.ngrok_authtoken))
-        _, public_url = tunnel_url(binary, args.port)
+        ensure_ngrok_config(binary, args.ngrok_authtoken)
+        _, public_url = tunnel_url(binary, args.port, directory)
 
     callback_url = f"{public_url}/callback"
     channel_id = (args.channel_id or input("LINE Channel ID（留空則改為手動設定 Webhook）：")).strip()
@@ -1185,6 +1601,8 @@ def run_resume(args: Any) -> None:
     if channel_id and not args.no_browser:
         with LineConsoleBrowser(args.skip_browser_install, args.browser_profile) as browser:
             configured = browser.configure_webhook(callback_url, channel_id)
+            if configured and not browser.disable_auto_response_messages(name):
+                print("請到 LINE Manager → Settings → Response settings，關閉 Auto-response messages，避免重複回覆。")
 
     if configured:
         print("\nWebhook URL 已儲存、Verify 成功，且 Use webhook 已啟用。")

@@ -54,14 +54,22 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--browser-profile",
         type=Path,
-        help="保存 LINE 登入狀態的 Playwright profile 目錄（預設為使用者的 ZEAL 資料目錄）。",
+        help="保存 LINE 登入狀態的 Playwright profile 目錄（預設為目前目錄的 .zeal-line-browser-profile）。",
     )
-    setup.add_argument(
+    runtime = setup.add_mutually_exclusive_group()
+    runtime.add_argument(
         "--keep-running",
+        dest="keep_running",
         action="store_true",
-        help="Keep ngrok and the Flask app running after the final confirmation.",
+        help="Keep ngrok and the Bot running after setup (default).",
     )
-    setup.set_defaults(handler=run_setup)
+    runtime.add_argument(
+        "--stop-after-setup",
+        dest="keep_running",
+        action="store_false",
+        help="Stop ngrok and the Bot when setup finishes.",
+    )
+    setup.set_defaults(handler=run_setup, keep_running=True)
 
     resume = line_bot_commands.add_parser(
         "resume",
@@ -102,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument(
         "--browser-profile",
         type=Path,
-        help="保存 LINE 登入狀態的 Playwright profile 目錄（預設為使用者的 ZEAL 資料目錄）。",
+        help="保存 LINE 登入狀態的 Playwright profile 目錄（預設為目前目錄的 .zeal-line-browser-profile）。",
     )
     resume.add_argument(
         "--no-browser",
