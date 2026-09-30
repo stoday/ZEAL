@@ -2,7 +2,7 @@
 
 LINE sign-in, MFA, CAPTCHA, and other proof-of-humanity remain human-only. All
 other safely recognised controls are automated from a local persistent profile;
-the session is visible only while a human checkpoint needs attention.
+the session remains visible with explicit page-input handoffs.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from zeal.browser_gate import BrowserGate
 
 
 LINE_MANAGER_URL = "https://manager.line.biz/"
@@ -594,14 +596,15 @@ def account_creation_detected(url: str, page_text: str) -> bool:
 
 
 class LineConsoleBrowser:
-    """A persistent LINE session that is visible only at human-only checkpoints."""
+    """A persistent visible LINE session shared by automation and human checks."""
 
     def __init__(self, skip_browser_install: bool, profile_directory: Path | None = None) -> None:
         self.skip_browser_install = skip_browser_install
         self.profile_directory = (profile_directory or default_browser_profile_directory()).expanduser().resolve()
         self.playwright: Any | None = None
         self.context: Any | None = None
-        self.headless = False
+        self.gate: BrowserGate | None = None
+        self.account_finish_clicked = False
 
     def __enter__(self) -> "LineConsoleBrowser":
         if not self.skip_browser_install:
@@ -617,33 +620,46 @@ class LineConsoleBrowser:
             raise SetupError("缺少 Playwright。請重新安裝 ZEAL 套件。") from error
 
         self.playwright = sync_playwright().start()
-        self._launch_context(headless=False)
+        try:
+            self._launch_context()
+        except Exception:
+            self.playwright.stop()
+            self.playwright = None
+            raise
         print(f"ZEAL 瀏覽器登入資料會保存在：{self.profile_directory}")
         return self
 
-    def _launch_context(self, *, headless: bool) -> None:
+    def _launch_context(self) -> None:
         assert self.playwright is not None
         self.profile_directory.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             self.profile_directory.chmod(0o700)
-        self.context = self.playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.profile_directory),
-            headless=headless,
-        )
-        self.headless = headless
-
-    def restart(self, *, headless: bool) -> None:
-        """Persist the visible session, then reopen the same profile in one mode."""
-        if self.context:
+        try:
+            self.context = self.playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.profile_directory), headless=False
+            )
+        except Exception as error:
+            raise SetupError("無法開啟 LINE 瀏覽器；請確認 Chromium 已安裝且目前有桌面顯示環境。") from error
+        try:
+            self.gate = BrowserGate(self.context)
+        except Exception as error:
             self.context.close()
-        self.context = None
-        self._launch_context(headless=headless)
+            self.context = None
+            raise SetupError("無法啟用瀏覽器操作鎖；請更新 Playwright Chromium 後重試。") from error
 
-    def __exit__(self, *_: object) -> None:
-        if self.context:
-            self.context.close()
-        if self.playwright:
-            self.playwright.stop()
+    def __exit__(self, exc_type: Any, error: Any, _traceback: Any) -> None:
+        try:
+            if exc_type is not None and issubclass(exc_type, SetupError) and self.context:
+                with contextlib.suppress(Exception):
+                    if self.pages:
+                        self._give_user_control(self.pages[-1], "ZEAL 已暫停，現在可由你操作此頁面")
+                        print(f"\nZEAL 已暫停：{error}")
+                        input("瀏覽器會保持開啟供你檢查；完成後按 Enter 關閉：")
+        finally:
+            if self.context:
+                self.context.close()
+            if self.playwright:
+                self.playwright.stop()
 
     @property
     def pages(self) -> list[Any]:
@@ -656,52 +672,88 @@ class LineConsoleBrowser:
             return page.locator("body").inner_text()
         return ""
 
-    def _hand_off_human_verification(self, url: str, reason: str) -> Any:
-        """Show a fresh visible browser only for login, MFA, or CAPTCHA."""
-        if self.headless:
-            self.restart(headless=False)
-        assert self.context is not None
-        page = self.context.new_page()
-        page.goto(url, wait_until="domcontentloaded")
-        print(f"\n偵測到「{reason}」。已切回可見瀏覽器，請只完成 LINE 的人類驗證。")
-        input("完成驗證且已回到 LINE 頁面後按 Enter；ZEAL 會切回 headless 繼續：")
-        self.restart(headless=True)
-        assert self.context is not None
-        page = self.context.new_page()
-        page.goto(url, wait_until="domcontentloaded")
+    def _wait_for_browser(self, milliseconds: int) -> None:
+        """Give Playwright time to process navigation and challenge events."""
+        for page in reversed(self.pages):
+            with contextlib.suppress(Exception):
+                page.wait_for_timeout(milliseconds)
+                return
+        time.sleep(milliseconds / 1000)
+
+    def _automate(self, message: str = "ZEAL 正在操作此頁面") -> None:
+        if self.gate:
+            self.gate.automation(message)
+
+    def _give_user_control(self, page: Any, message: str = "現在可由你操作此頁面") -> None:
+        if self.gate:
+            self.gate.human(page, message)
+        else:
+            with contextlib.suppress(AttributeError):
+                page.bring_to_front()
+
+    def _act(self, page: Any, operation: Any) -> Any:
+        with contextlib.suppress(AttributeError):
+            page.bring_to_front()
+        return self.gate.action(page, operation) if self.gate else operation()
+
+    def _hand_off_human_verification(self, page: Any, reason: str) -> Any:
+        """Let the account holder solve a challenge in the current browser page."""
+        self._give_user_control(page, "現在可由你完成 LINE 的驗證")
+        print(f"\n偵測到「{reason}」。請在目前的 LINE 瀏覽器完成人類驗證。")
+        try:
+            input("完成驗證後按 Enter，ZEAL 會在同一個瀏覽器繼續：")
+        finally:
+            self._automate()
         return page
 
     def open_authenticated_page(self, url: str, purpose: str) -> Any:
-        """Open a page headlessly, with a bounded visible hand-off if LINE asks for proof of humanity."""
+        """Open a visible page and hand human-only verification to the user."""
         assert self.context is not None
         page = self.context.new_page()
         page.goto(url, wait_until="domcontentloaded")
+        self._automate(f"ZEAL 正在開啟 {purpose}")
+        self._accept_information_use_consent(page)
         reason = human_verification_reason(self._page_text(page))
         if reason:
-            page = self._hand_off_human_verification(url, reason)
+            page = self._hand_off_human_verification(page, reason)
             if human_verification_reason(self._page_text(page)):
                 raise SetupError(f"{purpose} 仍要求人類驗證；請完成驗證後重新執行。")
         return page
 
     def _show_manual_page(self, url: str) -> None:
-        if self.headless:
-            self.restart(headless=False)
-            assert self.context is not None
-            page = self.context.new_page()
-            page.goto(url, wait_until="domcontentloaded")
+        if self.pages:
+            self._give_user_control(self.pages[-1], "ZEAL 已暫停，現在可由你操作此頁面")
+
+    def _accept_information_use_consent(self, page: Any) -> bool:
+        """Accept LINE's named information-use consent when it interrupts setup."""
+        if "同意我們使用您的資訊" not in self._page_text(page):
+            return False
+        for candidate in (
+            page.get_by_role("button", name=re.compile(r"^同意(?:並繼續)?$")),
+            page.get_by_text("同意", exact=True),
+        ):
+            with contextlib.suppress(Exception):
+                self._act(page, lambda: candidate.last.click(timeout=8_000))
+                print("ZEAL 已按 LINE『同意我們使用您的資訊』頁面的「同意」。")
+                return True
+        self._show_manual_page(page.url)
+        raise SetupError("LINE 資訊使用同意頁的按鈕未被辨識；請在目前的瀏覽器檢查。")
 
     def _click_first(self, page: Any, labels: tuple[str, ...], *, required: bool = True) -> bool:
-        for label in labels:
-            candidate = page.get_by_text(label, exact=True)
-            with contextlib.suppress(Exception):
-                # click() waits for a delayed Manager/Console control.  Calling
-                # count() first would return zero while the next screen is still
-                # rendering and turn a valid transition into a false fallback.
-                candidate.last.click(timeout=8_000)
-                return True
+        consent_handled = self._accept_information_use_consent(page)
+        for _ in range(2):
+            for label in labels:
+                candidate = page.get_by_text(label, exact=True)
+                with contextlib.suppress(Exception):
+                    # click() waits for a delayed Manager/Console control.
+                    self._act(page, lambda: candidate.last.click(timeout=8_000))
+                    return True
+            if consent_handled or not self._accept_information_use_consent(page):
+                break
+            consent_handled = True
         if required:
             self._show_manual_page(page.url)
-            raise SetupError("LINE 介面未被安全辨識；已切回可見瀏覽器供手動完成。")
+            raise SetupError("LINE 介面未被安全辨識；請在目前的瀏覽器手動完成。")
         return False
 
     def _provider_options(self, page: Any) -> tuple[str, ...]:
@@ -718,12 +770,26 @@ class LineConsoleBrowser:
                 options.append(label)
         return tuple(options)
 
+    def existing_official_account(self, account_name: str) -> bool:
+        """Check LINE's live account list before retrying an interrupted setup."""
+        page = self.open_authenticated_page(LINE_MANAGER_URL, "確認既有 LINE 官方帳號")
+        for _ in range(2):
+            for candidate in (page, *reversed(self.pages)):
+                with contextlib.suppress(Exception):
+                    candidate.get_by_text(account_name, exact=True).first.wait_for(
+                        state="visible", timeout=10_000
+                    )
+                    return True
+            if not any(self._accept_information_use_consent(candidate) for candidate in self.pages):
+                break
+        return False
+
     def fill_official_account_form(self, account: AccountDetails, form_page: Any) -> str:
         """Fill user-provided fields, then select an industry from live LINE options."""
         try:
-            form_page.get_by_role("textbox", name="帳號名稱", exact=True).fill(account.name)
-            form_page.get_by_role("textbox", name="電子郵件帳號", exact=True).fill(account.email)
-            form_page.get_by_role("textbox", name="公司名稱", exact=True).fill(account.company_name)
+            self._act(form_page, lambda: form_page.get_by_role("textbox", name="帳號名稱", exact=True).fill(account.name))
+            self._act(form_page, lambda: form_page.get_by_role("textbox", name="電子郵件帳號", exact=True).fill(account.email))
+            self._act(form_page, lambda: form_page.get_by_role("textbox", name="公司名稱", exact=True).fill(account.company_name))
         except Exception as error:
             raise SetupError("無法辨識 LINE 表單的帳號名稱、Email 或公司名稱欄位。") from error
 
@@ -745,7 +811,7 @@ class LineConsoleBrowser:
 
         major_category = prompt_option("業種大分類", major_options)
         try:
-            major_select.select_option(label=major_category)
+            self._act(form_page, lambda: major_select.select_option(label=major_category))
             # LINE populates the dependent select asynchronously.  Waiting for
             # its first non-placeholder option avoids treating a valid category
             # as though it had no minor categories.
@@ -764,7 +830,7 @@ class LineConsoleBrowser:
 
         minor_category = prompt_option("業種小分類", minor_options)
         try:
-            minor_select.select_option(label=minor_category)
+            self._act(form_page, lambda: minor_select.select_option(label=minor_category))
         except Exception as error:
             raise SetupError("無法將所選業種寫入 LINE 表單。") from error
         print(f"已在 LINE 表單填入帳號資料並選擇業種：{major_category}／{minor_category}")
@@ -774,32 +840,21 @@ class LineConsoleBrowser:
         assert self.context is not None
         page = self.context.new_page()
         page.goto(LINE_OFFICIAL_ACCOUNT_ENTRY_URL, wait_until="domcontentloaded")
-        print("\n已開啟由 ZEAL 控制的可見瀏覽器，並直接前往「建立LINE官方帳號」表單。")
-        print("若畫面要求登入，請自行完成 LINE 登入、OTP/MFA 或 CAPTCHA。")
-        print("登入完成後按 Enter；ZEAL 會重新開啟建立表單，並填入：")
-        print(f"     名稱：{account.name}")
-        print(f"     公司／店鋪名稱：{account.company_name}")
-        print("     電子郵件帳號：已由 CLI 安全讀取，將直接填入表單。")
-        print("     業種大分類與小分類：ZEAL 會從 LINE 表單即時讀取選項後詢問。")
-        print("\n登入、OTP/MFA 與 CAPTCHA 由你本人完成；ZEAL 不會記錄密碼、Cookie 或 OTP。")
-        input("完成登入後按 Enter，讓 ZEAL 前往建立表單：")
+        self._give_user_control(page, "若 LINE 要求你操作，請在此頁完成")
+        print("\n已開啟 LINE 瀏覽器。官方帳號資料只需在 ZEAL 終端機輸入；ZEAL 會填寫網頁表單。")
+        announced_login = False
         while True:
-            form_page = self._wait_for_entry_form(seconds=2)
-            if form_page is None:
-                if page.is_closed():
-                    page = self.context.new_page()
-                try:
-                    page.goto(LINE_OFFICIAL_ACCOUNT_ENTRY_URL, wait_until="domcontentloaded")
-                except Exception:
-                    # A temporary redirect or network error should not close the
-                    # visible login session while the user is still signing in.
-                    pass
-                form_page = self._wait_for_entry_form(seconds=10)
+            form_page = self._wait_for_entry_form(seconds=10)
             if form_page is not None:
+                self._automate("ZEAL 正在填寫官方帳號表單")
+                print("LINE 建立表單已載入；ZEAL 正在填入帳號資料與業種。")
                 self.fill_official_account_form(account, form_page)
                 return form_page
-            print("尚未看到 LINE 官方帳號建立表單；瀏覽器會保持開啟，請完成登入或驗證。")
-            input("完成後按 Enter 再試一次（Ctrl+C 可取消）：")
+            if not self.pages or all(candidate.is_closed() for candidate in self.pages):
+                raise SetupError("LINE 瀏覽器已關閉；請重新執行設定。")
+            if not announced_login:
+                print("若 LINE 要求登入、OTP/MFA 或 CAPTCHA，請在瀏覽器完成；ZEAL 會自動接續。")
+                announced_login = True
 
     def _wait_for_entry_form(self, *, seconds: int) -> Any | None:
         """Wait for the live entry form rather than trusting a login redirect URL."""
@@ -807,63 +862,113 @@ class LineConsoleBrowser:
         while time.monotonic() < deadline:
             for candidate in reversed(self.pages):
                 with contextlib.suppress(Exception):
-                    location = urllib.parse.urlsplit(candidate.url)
-                    if (
-                        not candidate.is_closed()
-                        and location.hostname == "entry.line.biz"
-                        and location.path.startswith("/form/entry/unverified")
-                        and candidate.locator("select").count() >= 3
-                    ):
+                    if self._is_entry_form(candidate):
                         return candidate
-            time.sleep(0.25)
+            self._wait_for_browser(250)
         return None
 
+    @staticmethod
+    def _is_entry_url(url: str) -> bool:
+        location = urllib.parse.urlsplit(url)
+        return location.hostname == "entry.line.biz" and location.path.startswith(
+            "/form/entry/"
+        )
+
+    @staticmethod
+    def _is_entry_form(page: Any) -> bool:
+        location = urllib.parse.urlsplit(page.url)
+        return (
+            not page.is_closed()
+            and LineConsoleBrowser._is_entry_url(page.url)
+            and location.path.startswith("/form/entry/unverified")
+            and page.locator("select").count() >= 3
+        )
+
     def submit_account_creation(self, page: Any) -> None:
-        """Validate the form, then let the account holder review LINE's confirmation.
+        """Submit both LINE account-creation steps without a terminal pause.
 
         Only browser controls marked as required are checked.  Optional consent
         (for example, marketing messages) is intentionally left untouched.
         """
+        self._automate("ZEAL 正在送出官方帳號建立表單")
         for checkbox in page.locator('input[type="checkbox"][required]').all():
             with contextlib.suppress(Exception):
                 if checkbox.is_visible() and checkbox.is_enabled() and not checkbox.is_checked():
-                    checkbox.check(timeout=5_000)
+                    self._act(page, lambda: checkbox.check(timeout=5_000))
 
-        print("\nZEAL 將送出建立表單；若 LINE 顯示登入、OTP/MFA 或 CAPTCHA，請只完成該人類驗證。")
-        self._click_first(page, ("Create", "建立", "確定", "Submit"))
-        reason = human_verification_reason(self._page_text(page))
-        if reason:
-            print(f"偵測到「{reason}」。請在目前可見瀏覽器完成驗證，但先不要再按建立。")
-            input("完成人類驗證後按 Enter；ZEAL 會送出已填好的表單：")
-            self._click_first(page, ("Create", "建立", "確定", "Submit"))
-
+        print("\nZEAL 正在按 LINE 表單的「建立／確定」，前往資料確認頁。")
+        if not self._click_first(page, ("Create", "建立", "確定", "Submit"), required=False):
+            raise SetupError("ZEAL 未找到 LINE 建立表單的送出按鈕；請在目前的瀏覽器檢查表單。")
         if any(account_creation_detected(current.url, self._page_text(current)) for current in self.pages):
             return
-        print("\n若 LINE 要求人類驗證，請先自行完成；接著在可見瀏覽器核對資料與同意事項。")
-        input("確認無誤後按 Enter，ZEAL 會按「完成」送出建立申請：")
-        if any(account_creation_detected(current.url, self._page_text(current)) for current in self.pages):
-            return
-        clicked = False
+        print("ZEAL 正在按 LINE 確認頁的「完成」。")
+        self.account_finish_clicked = self._click_account_finish()
+        if self.account_finish_clicked:
+            print("ZEAL 已按「完成」，正在等待建立結果。")
+
+    def _click_account_finish(self) -> bool:
         for current in reversed(self.pages):
             if self._click_first(current, ("完成", "Finish", "Complete", "Done"), required=False):
-                clicked = True
-                break
-        if not clicked:
-            print("ZEAL 未找到確認頁的「完成」按鈕；請在目前可見瀏覽器自行按下。")
-        input("若 LINE 要求圖片驗證，請自行完成；若仍在確認頁，請再按「完成」。看到建立成功後按 Enter：")
+                return True
+        return False
+
+    def _account_human_verification_reason(self) -> str | None:
+        for page in self.pages:
+            reason = human_verification_reason(self._page_text(page))
+            if reason in ("sign in", "登入") and urllib.parse.urlsplit(page.url).hostname not in (
+                "account.line.biz",
+                "access.line.me",
+            ):
+                reason = None
+            if reason:
+                return reason
+            with contextlib.suppress(Exception):
+                if any(
+                    marker in frame.url.casefold()
+                    for frame in page.frames
+                    for marker in ("recaptcha", "hcaptcha", "turnstile")
+                ):
+                    return "CAPTCHA"
+        return None
 
     def continue_after_account_creation(self) -> None:
-        """Wait for LINE's success state, then persist it and switch headless."""
+        """Wait for account creation and preserve the active page through CAPTCHA."""
+        human_handoffs = 0
         while True:
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 for page in self.pages:
                     if account_creation_detected(page.url, self._page_text(page)):
-                        self.restart(headless=True)
                         return
-                time.sleep(1)
-            print("尚未偵測到官方帳號建立完成；瀏覽器會保持開啟。")
-            input("請完成 LINE 確認或人類驗證後按 Enter 再檢查（Ctrl+C 可取消）：")
+                self._wait_for_browser(1000)
+            reason = self._account_human_verification_reason()
+            if reason:
+                human_handoffs += 1
+                if human_handoffs > 3:
+                    raise SetupError("LINE 持續要求人類驗證；請稍後重試。")
+                if not self.pages:
+                    raise SetupError("LINE 驗證頁面已遺失；請確認官方帳號是否已建立。")
+                self._give_user_control(self.pages[-1], "現在可由你完成 LINE 的驗證")
+                print(f"LINE 要求「{reason}」；請只完成人類驗證，不必按確認頁的「完成」。")
+                try:
+                    input("驗證完成後按 Enter，ZEAL 會在同一個瀏覽器接手：")
+                finally:
+                    self._automate()
+                if not self.pages:
+                    raise SetupError("LINE 驗證視窗已關閉；請確認官方帳號是否已建立。")
+                if any(account_creation_detected(page.url, self._page_text(page)) for page in self.pages):
+                    return
+                if self._click_account_finish():
+                    self.account_finish_clicked = True
+                    print("ZEAL 已在驗證後按「完成」，正在等待建立結果。")
+                continue
+            if not self.account_finish_clicked and self._click_account_finish():
+                self.account_finish_clicked = True
+                print("ZEAL 已按 LINE 確認頁的「完成」，正在等待建立結果。")
+                continue
+            if self.account_finish_clicked:
+                raise SetupError("ZEAL 已按「完成」，但 LINE 未回報建立成功；請到官方帳號管理頁確認結果。")
+            raise SetupError("ZEAL 找不到 LINE 確認頁的「完成」按鈕；已停止自動送出，避免重複建立。")
 
     def enable_messaging_api(self, account_name: str) -> MessagingApiSetup:
         """Enable Messaging API and return its generated channel ID.
@@ -872,6 +977,7 @@ class LineConsoleBrowser:
         LINE's live list rather than needing to remember a command-line value.
         """
         page = self.open_authenticated_page(LINE_MANAGER_URL, "開啟 LINE Official Account Manager")
+        self._automate("ZEAL 正在啟用 Messaging API")
         self._click_first(page, (account_name,))
         self._click_first(page, ("Messaging API", "Messaging API設定", "Messaging API settings"))
         self._click_first(page, ("Enable Messaging API", "啟用 Messaging API", "Messaging APIを利用する"))
@@ -879,7 +985,7 @@ class LineConsoleBrowser:
         options = self._provider_options(page)
         if not options:
             self._show_manual_page(page.url)
-            raise SetupError("無法讀取 Provider 清單；已切回可見瀏覽器供手動完成。")
+            raise SetupError("無法讀取 Provider 清單；請在目前的瀏覽器手動完成。")
         provider, create_provider = prompt_provider_choice(options)
 
         if create_provider:
@@ -887,27 +993,28 @@ class LineConsoleBrowser:
             field = page.get_by_role("textbox")
             if field.count() == 0:
                 self._show_manual_page(page.url)
-                raise SetupError("找不到新 Provider 名稱欄位；已切回可見瀏覽器供手動完成。")
-            field.last.fill(create_provider)
+                raise SetupError("找不到新 Provider 名稱欄位；請在目前的瀏覽器手動完成。")
+            self._act(page, lambda: field.last.fill(create_provider))
         else:
             self._click_first(page, (provider or "",))
         self._click_first(page, ("Confirm", "Create", "建立", "確定"))
 
         reason = human_verification_reason(self._page_text(page))
         if reason:
-            page = self._hand_off_human_verification(page.url, reason)
+            page = self._hand_off_human_verification(page, reason)
         channel_id = channel_id_from_url(page.url)
         if not channel_id:
             page = self.open_authenticated_page(LINE_CONSOLE_URL, "確認 Messaging API channel")
             channel_id = channel_id_from_url(page.url)
         if not channel_id:
             self._show_manual_page(page.url)
-            raise SetupError("Messaging API channel 尚未被安全辨識；已切回可見瀏覽器供手動確認。")
+            raise SetupError("Messaging API channel 尚未被安全辨識；請在目前的瀏覽器手動確認。")
         return MessagingApiSetup(channel_id=channel_id, provider=create_provider or provider or "未辨識")
 
     def wait_for_credentials(self, channel_id: str) -> Credentials:
         """Read credentials from the Messaging API page without printing them."""
         page = self.open_authenticated_page(messaging_api_url(channel_id), "讀取 Messaging API 憑證")
+        self._automate("ZEAL 正在讀取 Channel 憑證")
         credentials = extract_credentials(self.pages)
         if credentials:
             return credentials
@@ -916,7 +1023,7 @@ class LineConsoleBrowser:
         if credentials:
             return credentials
         self._show_manual_page(page.url)
-        raise SetupError("無法自動讀取或發行兩個憑證；已切回可見瀏覽器供手動處理。")
+        raise SetupError("無法自動讀取或發行兩個憑證；請在目前的瀏覽器手動處理。")
 
     def configure_webhook(self, webhook_url: str, channel_id: str | None = None) -> bool:
         """Set, verify, and enable a webhook after the user has signed in locally."""
@@ -925,24 +1032,25 @@ class LineConsoleBrowser:
             messaging_api_url(channel_id) if channel_id else LINE_CONSOLE_URL,
             "設定 Webhook",
         )
+        self._automate("ZEAL 正在設定 Webhook")
         try:
-            page.get_by_role("button", name=re.compile("^Edit$", re.I)).click(timeout=8_000)
+            self._act(page, lambda: page.get_by_role("button", name=re.compile("^Edit$", re.I)).click(timeout=8_000))
             field = page.get_by_role(
                 "textbox", name=re.compile("webhook URL", re.I)
             )
             if field.count() == 0:
                 field = page.locator('textarea[placeholder*="webhook" i]')
-            field.last.fill(webhook_url)
-            page.get_by_role("button", name=re.compile("^(Update|Save)$", re.I)).click(timeout=8_000)
-            page.get_by_role("button", name=re.compile("^Verify$", re.I)).click(timeout=10_000)
+            self._act(page, lambda: field.last.fill(webhook_url))
+            self._act(page, lambda: page.get_by_role("button", name=re.compile("^(Update|Save)$", re.I)).click(timeout=8_000))
+            self._act(page, lambda: page.get_by_role("button", name=re.compile("^Verify$", re.I)).click(timeout=10_000))
             page.get_by_text(re.compile("^Success$", re.I)).wait_for(timeout=10_000)
-            page.get_by_role("button", name=re.compile("^OK$", re.I)).click(timeout=5_000)
+            self._act(page, lambda: page.get_by_role("button", name=re.compile("^OK$", re.I)).click(timeout=5_000))
 
             use_webhook = page.get_by_text(re.compile("^Use webhook$", re.I))
             webhook_row = use_webhook.locator("xpath=..")
             webhook_input = webhook_row.locator('input[name="active"]')
             if not webhook_input.is_checked():
-                webhook_row.locator("label[for]").click(timeout=5_000)
+                self._act(page, lambda: webhook_row.locator("label[for]").click(timeout=5_000))
             return webhook_input.is_checked()
         except Exception:
             return False
@@ -980,9 +1088,27 @@ def run_setup(args: Any) -> None:
         print(f"ngrok 公開網址：{public_url}")
 
         with LineConsoleBrowser(args.skip_browser_install, args.browser_profile) as browser:
-            form_page = browser.begin_account_creation(account)
-            browser.submit_account_creation(form_page)
-            browser.continue_after_account_creation()
+            account_exists = reused and browser.existing_official_account(account.name)
+            if account_exists:
+                print("LINE 管理頁已有同名官方帳號；ZEAL 會接續 Messaging API 設定。")
+            else:
+                if reused:
+                    if browser.pages:
+                        browser._give_user_control(
+                            browser.pages[-1], "請確認 LINE 管理頁是否已有這個官方帳號"
+                        )
+                    try:
+                        answer = input(
+                            "LINE 管理頁未找到同名帳號。確認尚未建立且要新建時，輸入「建立」；直接按 Enter 則停止："
+                        ).strip()
+                    finally:
+                        browser._automate()
+                    if answer != "建立":
+                        print("已停止，沒有重複建立 LINE 官方帳號。")
+                        return
+                form_page = browser.begin_account_creation(account)
+                browser.submit_account_creation(form_page)
+                browser.continue_after_account_creation()
             messaging = browser.enable_messaging_api(account.name)
             credentials = browser.wait_for_credentials(messaging.channel_id)
             write_credentials(destination, credentials, account.port)
@@ -1001,6 +1127,8 @@ def run_setup(args: Any) -> None:
                 print("LINE Console 介面未被安全辨識；請手動貼上並驗證下列 Webhook URL：")
                 print(callback_url)
 
+            if browser.pages:
+                browser._give_user_control(browser.pages[-1], "現在可由你檢查 LINE 設定並測試 Bot")
             input("用手機掃 QR Code 加好友，傳送任意文字並確認收到回聲後，按 Enter 結束：")
             print(format_completion_summary(
                 account,
@@ -1056,7 +1184,6 @@ def run_resume(args: Any) -> None:
     configured = False
     if channel_id and not args.no_browser:
         with LineConsoleBrowser(args.skip_browser_install, args.browser_profile) as browser:
-            browser.restart(headless=True)
             configured = browser.configure_webhook(callback_url, channel_id)
 
     if configured:

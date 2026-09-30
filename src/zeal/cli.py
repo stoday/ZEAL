@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Sequence
 
@@ -13,6 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="zeal",
         description="Bootstrap small developer workflows safely.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {package_version('zeal-builder')}",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

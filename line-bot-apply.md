@@ -4,7 +4,7 @@
 
 執行環境為 Windows PowerShell、Python、Flask 與 ngrok。這是本機開發與測試流程；正式服務再將同一支程式部署到具有效 HTTPS 憑證的主機即可。
 
-> 若使用本專案提供的 ZEAL 工具，可先執行 `uv sync`，再執行 `uv run zeal line-bot setup`。當 LINE 顯示可用 Provider 時，ZEAL 會在終端列出編號讓你選擇既有 Provider 或輸入新 Provider 名稱；不必預先知道或記憶 Provider 名稱。它會建立 `line-bot-<名稱>/`、處理 ngrok、在非人類驗證階段自動操作 LINE Console，並將讀取到的密鑰寫入被 Git 忽略的 `.env`。登入、OTP/MFA、CAPTCHA 與其他人類驗證仍須由帳號本人完成；ZEAL 完成後會重用同一個本機 profile 回到 headless 模式。Provider 不可日後移轉，因此不能由程式猜測。
+> 若使用本專案提供的 ZEAL 工具，可先執行 `uv sync`，再執行 `uv run zeal line-bot setup`。當 LINE 顯示可用 Provider 時，ZEAL 會在終端列出編號讓你選擇既有 Provider 或輸入新 Provider 名稱；不必預先知道或記憶 Provider 名稱。它會建立 `line-bot-<名稱>/`、處理 ngrok、在可見瀏覽器自動操作 LINE Console，並將讀取到的密鑰寫入被 Git 忽略的 `.env`。灰色遮罩表示 ZEAL 正在操作、網頁暫不接受手動輸入；綠色提示表示交由你操作。登入、OTP/MFA、CAPTCHA 與其他人類驗證仍須由帳號本人在同一個瀏覽器完成。Provider 不可日後移轉，因此不能由程式猜測。
 
 ## 成品與流程
 
