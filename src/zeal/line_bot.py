@@ -265,7 +265,8 @@ def _option_rows(options: tuple[str, ...] | list[str], terminal_width: int) -> l
 
 
 def prompt_option(
-    label: str, options: tuple[str, ...] | list[str], *, two_columns: bool = False
+    label: str, options: tuple[str, ...] | list[str], *, two_columns: bool = False,
+    input_label: str | None = None,
 ) -> str:
     print(f"\n{label}：")
     rows = (
@@ -277,7 +278,7 @@ def prompt_option(
         print(row)
     while True:
         try:
-            return option_from_choice(input(f"{label}（輸入編號或完整名稱）："), options)
+            return option_from_choice(input(input_label or f"{label}（輸入編號或完整名稱）："), options)
         except SetupError as error:
             print(error)
 
@@ -300,15 +301,16 @@ def prompt_provider_choice(options: tuple[str, ...]) -> tuple[str | None, str | 
 
 def prompt_account_route() -> str:
     """Choose whether setup creates an Official Account or uses an existing one."""
+    print("\n先決定要建立新帳號，或接續你已能管理的官方帳號；ZEAL 會依選擇安排後續步驟。")
     choice = prompt_option("LINE 官方帳號設定方式", ("建立新的官方帳號", "接續既有官方帳號"))
     return "create" if choice == "建立新的官方帳號" else "existing"
 
 
 def account_confirmation_prompt(name: str) -> str:
-    """Keep continuation explicit so an accidental Enter cancels safely."""
-    continue_label = _accent("輸入「確認」繼續", "32;1")
-    cancel_label = _accent("直接按 Enter 取消", "31;1")
-    return f"將接續「{name}」。\n  {continue_label}\n  {cancel_label}\n請選擇："
+    """Confirm the selected account before changing its LINE settings."""
+    continue_label = _accent("請按 Enter 確認繼續", "32;1")
+    cancel_label = _accent("按 Ctrl+C 離開", "31;1")
+    return f"收到！會使用「{name}」進行接下來的設定。{continue_label}（{cancel_label}）："
 
 
 @dataclass(frozen=True)
@@ -449,13 +451,16 @@ def confirm_setup_start() -> None:
     """Explain the guided setup before collecting data or changing anything."""
     print(f"\n{_accent('◆ ZEAL 將協助您建立或接續 LINE 官方帳號，並設定能回覆訊息的簡易機器人。', '36;1')}")
     print("ZEAL 會代您開啟並操作瀏覽器；新建帳號時會填寫申請資料。登入與人類驗證仍由您親自完成。")
+    print("開始後會先檢查 ngrok；若尚未安裝，ZEAL 會嘗試下載，再進入 LINE 帳號流程。")
     print()
     if input("若同意開始，請按 Enter；按 Ctrl+C 取消：").strip():
         raise SetupError("尚未開始設定；同意時請直接按 Enter。")
 
 
-def setup_step(number: int, description: str) -> None:
+def setup_step(number: int, description: str, explanation: str | None = None) -> None:
     print(f"\n{_accent(f'[步驟 {number}/8] {description}', '36;1')}")
+    if explanation:
+        print(explanation)
 
 
 def project_directory(base: Path, account_name: str) -> Path:
@@ -802,9 +807,14 @@ def format_completion_summary(
 
 
 def format_runtime_instructions(
-    bot_pid: int | None, ngrok_pid: int | None, log_directory: Path
+    bot_pid: int | None,
+    ngrok_pid: int | None,
+    log_directory: Path,
+    *,
+    port: int,
+    ngrok_binary: str | None = None,
 ) -> str:
-    """Show how to inspect and stop the exact services left by this setup."""
+    """Show how to inspect, stop, and restart the services left by setup."""
     pids = [pid for pid in (bot_pid, ngrok_pid) if pid is not None]
     bot_log = log_directory / "bot.log"
     ngrok_log = log_directory / "ngrok.log"
@@ -821,16 +831,19 @@ def format_runtime_instructions(
             else "ngrok：使用已執行的連線；請從原先啟動 ngrok 的位置查看日誌與 PID。"
         ),
     ]
+    lines.append("ngrok 本機狀態頁：http://127.0.0.1:4040（可在瀏覽器查看目前通道）。")
     if os.name == "nt":
         joined = ",".join(str(pid) for pid in pids)
         quoted_bot_log = str(bot_log).replace("'", "''")
         if pids:
             lines.append(f"PowerShell 查看本次啟動的程序：Get-Process -Id {joined}")
             lines.append(f"PowerShell 停止本次啟動的程序：Stop-Process -Id {joined}")
+        lines.append("PowerShell 檢查 4040 是否仍在監聽：(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded")
         lines.append(f"PowerShell 查看 Bot 日誌：Get-Content -Tail 30 -Wait -LiteralPath '{quoted_bot_log}'")
         if bot_pid is None:
             lines.append("PowerShell 查找既有 Bot：Get-NetTCPConnection -LocalPort <Bot 埠> -State Listen")
         if ngrok_pid is not None:
+            lines.append(f"PowerShell 只停止 ngrok：Stop-Process -Id {ngrok_pid}")
             quoted_ngrok_log = str(ngrok_log).replace("'", "''")
             lines.append(
                 f"PowerShell 查看 ngrok 日誌：Get-Content -Tail 30 -Wait -LiteralPath '{quoted_ngrok_log}'"
@@ -838,19 +851,30 @@ def format_runtime_instructions(
         else:
             lines.append("PowerShell 查找既有 ngrok：Get-Process -Name ngrok")
             lines.append("PowerShell 確認 PID 後停止既有 ngrok：Stop-Process -Id <ngrok PID>")
+        if ngrok_binary is not None:
+            quoted_binary = ngrok_binary.replace("'", "''")
+            lines.append(f"PowerShell 重新啟動 ngrok（另開終端）：& '{quoted_binary}' http {port}")
+        else:
+            lines.append(f"PowerShell 重新啟動既有 ngrok（另開終端）：ngrok http {port}（若不在 PATH，請改用原先執行檔的完整路徑）")
     else:
         joined = ",".join(str(pid) for pid in pids)
         if pids:
             lines.append(f"查看本次啟動的程序：ps -p {joined} -o pid,command")
             lines.append(f"停止本次啟動的程序：kill {' '.join(str(pid) for pid in pids)}")
+        lines.append("檢查 4040 是否仍有通道：curl -fsS http://127.0.0.1:4040/api/tunnels")
         lines.append(f"查看 Bot 日誌：tail -f {shlex.quote(str(bot_log))}")
         if bot_pid is None:
             lines.append("查找既有 Bot：lsof -i TCP:<Bot 埠> -sTCP:LISTEN")
         if ngrok_pid is not None:
+            lines.append(f"只停止 ngrok：kill {ngrok_pid}")
             lines.append(f"查看 ngrok 日誌：tail -f {shlex.quote(str(ngrok_log))}")
         else:
-            lines.append("查找既有 ngrok：pgrep -af ngrok")
+            lines.append("查找既有 ngrok：pgrep -fl ngrok")
             lines.append("確認 PID 後停止既有 ngrok：kill <ngrok PID>")
+        binary = shlex.quote(ngrok_binary) if ngrok_binary is not None else "ngrok"
+        lines.append(f"重新啟動 ngrok（另開終端）：{binary} http {port}")
+    lines.append("重新啟動後請查看 4040 的 HTTPS 網址；若網址改變，請在 LINE Developers Console 更新 Webhook URL（加上 /callback），再按 Verify 並確認 Use webhook 已開啟。")
+    lines.append("若也停止了 Bot，請先依產生專案的 README.md 啟動 Bot。")
     return "\n".join(lines)
 
 
@@ -977,6 +1001,34 @@ def install_ngrok() -> Path:
         unpacked.replace(binary)
     with contextlib.suppress(OSError):
         binary.chmod(0o700)
+    return binary
+
+
+def prepare_ngrok(argument_token: str | None, port: int) -> Path:
+    """Check the local ngrok binary and configuration before any LINE setup."""
+    print("\n[啟動前檢查] 確認 ngrok 可用；LINE 稍後需要它連到本機 Bot。")
+    try:
+        binary = install_ngrok()
+        version = subprocess.run(
+            [str(binary), "version"], capture_output=True, text=True, check=False, timeout=10
+        )
+    except SetupError as error:
+        raise SetupError(f"{error} 請從 https://ngrok.com/download 手動安裝後重新執行 setup。") from error
+    except (OSError, subprocess.TimeoutExpired, zipfile.BadZipFile, tarfile.TarError) as error:
+        raise SetupError(
+            f"ngrok 無法安裝或執行：{error}。請檢查網路，或從 https://ngrok.com/download 安裝後重新執行 setup。"
+        ) from error
+    if version.returncode:
+        raise SetupError(
+            f"ngrok 無法執行：{binary}。請從 https://ngrok.com/download 重新安裝後再執行 setup。"
+        )
+    print(f"ngrok 執行檔已確認：{binary}")
+    if existing_tunnel_url(port):
+        print(f"本機 {port} 埠已有 ngrok HTTPS 通道；稍後會沿用。")
+    else:
+        ensure_ngrok_config(binary, argument_token)
+        print("ngrok 設定已確認；稍後會建立 HTTPS 通道。")
+    print("現在開始 LINE 官方帳號設定。")
     return binary
 
 
@@ -1175,7 +1227,7 @@ class LineConsoleBrowser:
             self.playwright.stop()
             self.playwright = None
             raise
-        print(f"ZEAL 瀏覽器登入資料會保存在：{self.profile_directory}")
+        print(f"ZEAL 已啟動瀏覽器（登入資料保存在：{self.profile_directory}）。")
         return self
 
     def _launch_context(self) -> None:
@@ -2027,7 +2079,10 @@ def start_setup_runtime(
         ngrok: subprocess.Popen[str] | None = None
         app: subprocess.Popen[str] | None = None
         try:
-            setup_step(5, "啟動 ngrok，取得 LINE 能連入本機 Bot 的 HTTPS 網址。")
+            setup_step(
+                5, "建立公開 HTTPS 通道",
+                f"LINE 無法直接連到你的電腦；ZEAL 會用 ngrok 將公開網址轉送到本機 Bot 的 {account.port} 埠。",
+            )
             print(f"取得 ngrok Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
             public_url = existing_tunnel_url(account.port)
             if public_url:
@@ -2039,7 +2094,10 @@ def start_setup_runtime(
             callback_url = f"{public_url}/callback"
             print(f"ngrok 公開網址：{_terminal_link(public_url)}")
 
-            setup_step(6, "啟動 Bot 並確認本機服務可供 LINE 測試。")
+            setup_step(
+                6, "啟動本機 Bot",
+                f"Bot 會在本機 {account.port} 埠接收 LINE 訊息並回覆；ZEAL 會確認它已啟動或沿用現有程序。",
+            )
             if local_port_listening(account.port):
                 result = line_api_request(
                     credentials.channel_access_token, "POST", "/channel/webhook/test",
@@ -2054,6 +2112,7 @@ def start_setup_runtime(
                 time.sleep(1)
                 if app.poll() is not None:
                     raise SetupError(f"Bot 啟動後立即結束；請查看日誌：{runtime_log_directory(directory) / 'bot.log'}")
+                print(f"Bot 已在本機 {account.port} 埠啟動；接下來會將 LINE Webhook 指向這個服務。")
             return account, ngrok, app, callback_url
         except (SetupError, OSError, TimeoutError, zipfile.BadZipFile, tarfile.TarError) as error:
             stop_process(app)
@@ -2097,14 +2156,22 @@ def run_setup(args: Any) -> None:
     """Run `zeal line-bot setup`."""
     try:
         confirm_setup_start()
+        prepare_ngrok(args.ngrok_authtoken, args.port)
         route = prompt_account_route()
         if route == "create":
-            setup_step(1, "輸入新官方帳號資料。")
+            setup_step(
+                1, "準備新官方帳號資料",
+                "請填入 LINE 申請表需要的名稱與聯絡資料；稍後 ZEAL 會在瀏覽器協助建立帳號。",
+            )
             account = prompt_account_details(args.port)
+            print(f"「{account.name}」的申請資料已備妥；接下來會開啟 LINE 瀏覽器。")
             _run_setup_with_account(args, account)
         else:
             args.port = prompt_valid_port(args.port)
-            setup_step(1, "登入 LINE，選擇要接續的官方帳號。")
+            setup_step(
+                1, "選擇既有官方帳號",
+                "ZEAL 會開啟瀏覽器，列出你目前能管理的 LINE 官方帳號；選定後會接續該帳號的 Bot 設定。",
+            )
             with open_line_browser(args) as browser:
                 while True:
                     try:
@@ -2149,16 +2216,17 @@ def run_setup(args: Any) -> None:
                     else choice.name
                     for choice in choices
                 )
-                selected_label = prompt_option("可管理的 LINE 官方帳號", labels)
+                selected_label = prompt_option(
+                    "請選擇以下已存在的 LINE 官方帳號",
+                    labels,
+                    input_label="請輸入編號或完整名稱：",
+                )
                 selected = choices[labels.index(selected_label)]
                 while True:
                     answer = input(account_confirmation_prompt(selected.name)).strip()
-                    if answer == "確認":
-                        break
                     if not answer:
-                        print("已取消，尚未建立本機專案。")
-                        return
-                    print("請輸入「確認」繼續，或直接按 Enter 取消。")
+                        break
+                    print("請直接按 Enter 繼續；若要離開，請按 Ctrl+C。")
                 account = AccountDetails(selected.name, "", args.port)
                 _run_setup_with_account(args, account, browser=browser, manager_url=selected.manager_url)
     except (KeyboardInterrupt, EOFError):
@@ -2195,7 +2263,15 @@ def _run_setup_with_account(
     app: subprocess.Popen[str] | None = None
     completed = False
     try:
-        setup_step(2, "開啟 LINE 瀏覽器，建立或接續官方帳號；登入與人類驗證由你完成。")
+        account_action = (
+            "ZEAL 會在瀏覽器確認剛才選定的帳號，並接續它的設定。"
+            if manager_url
+            else "ZEAL 會先檢查有沒有同名帳號；若沒有，才在瀏覽器送出新帳號申請。"
+        )
+        setup_step(
+            2, "確認 LINE 官方帳號",
+            account_action + "LINE 登入、驗證碼和人類驗證仍由你在瀏覽器完成。",
+        )
         browser_context = (
             contextlib.nullcontext(browser)
             if browser is not None
@@ -2267,7 +2343,11 @@ def _run_setup_with_account(
                         finally:
                             browser._automate()
                 retry_setup_step("確認官方帳號建立結果", browser.continue_after_account_creation, browser)
-            setup_step(3, "確認 Messaging API 狀態；尚未啟用時才選擇 LINE Provider。")
+            print(f"官方帳號「{account.name}」已確認；接下來會檢查它能否將訊息交給 Bot。")
+            setup_step(
+                3, "確認 Messaging API 與 Provider",
+                "Messaging API 讓 LINE 將訊息交給 Bot 並接收回覆。Provider 是此 Channel 所屬服務的經營者；若尚未啟用 API，ZEAL 會請你選擇或建立 Provider，綁定後無法移轉。",
+            )
             messaging = retry_setup_step(
                 "啟用 Messaging API",
                 lambda: (
@@ -2279,10 +2359,15 @@ def _run_setup_with_account(
             )
             if messaging.already_enabled:
                 print(
-                    f"Messaging API 已啟用（Channel ID：{messaging.channel_id}）；"
-                    "Provider 已綁定，LINE 不提供重新選擇。ZEAL 會沿用這個 Channel。"
+                    f"這個帳號的 Messaging API 已啟用（Channel ID：{messaging.channel_id}）。"
+                    "Provider 已綁定，ZEAL 會沿用現有 Channel，不需要重新選擇。"
                 )
-            setup_step(4, "讀取 LINE Channel 憑證，確認或寫入本機私有的 .env。")
+            else:
+                print(f"Messaging API 已就緒（Channel ID：{messaging.channel_id}）；接下來會準備 Bot 使用的憑證。")
+            setup_step(
+                4, "保存 Channel 憑證",
+                "Bot 需要 Channel secret 驗證 LINE 訊息，並使用 access token 傳送回覆。ZEAL 會將憑證保存在本機專案的 .env，不會顯示密鑰。",
+            )
             credentials = retry_setup_step(
                 "讀取 Channel 憑證",
                 lambda: browser.wait_for_credentials(messaging.channel_id),
@@ -2295,12 +2380,17 @@ def _run_setup_with_account(
             )
             if not existing_credentials:
                 print("已安全寫入 .env（未在終端輸出密鑰）。")
+            else:
+                print("已確認本機 .env 的憑證與所選 Channel 相符；接下來會啟動連線與 Bot。")
 
             account, ngrok, app, callback_url = start_setup_runtime(
                 args, account, destination, credentials
             )
 
-            setup_step(7, "設定 LINE Webhook，驗證並啟用訊息事件。")
+            setup_step(
+                7, "設定並驗證 Webhook",
+                "ZEAL 會把 Bot 的公開 HTTPS 網址交給 LINE，測試 LINE 能送達訊息，並確認 Use webhook 已啟用。",
+            )
             configured = retry_setup_step(
                 "設定 LINE Webhook",
                 lambda: require_webhook_enabled(browser.configure_webhook(
@@ -2318,7 +2408,10 @@ def _run_setup_with_account(
             else:
                 print("請到 LINE Manager → Settings → Response settings，關閉 Auto-response messages，避免重複回覆。")
 
-            setup_step(8, "用手機加好友並傳送訊息，確認 Bot 回覆。")
+            setup_step(
+                8, "實際測試 Bot 回覆",
+                "最後請用手機掃描加好友 QR Code，傳一則訊息給官方帳號；收到 Bot 回覆後，這次設定才算完成。",
+            )
             friend_url = retry_setup_step(
                 "讀取 LINE Basic ID", lambda: add_friend_url(credentials.channel_access_token),
                 fallback=prompt_add_friend_url,
@@ -2360,10 +2453,17 @@ def _run_setup_with_account(
                 keep_running=args.keep_running,
             ))
             if args.keep_running:
+                cached_ngrok = zeal_bin_directory() / ("ngrok.exe" if os.name == "nt" else "ngrok")
+                ngrok_binary = (
+                    str(ngrok.args[0]) if ngrok is not None
+                    else shutil.which("ngrok") or (str(cached_ngrok) if cached_ngrok.is_file() else None)
+                )
                 print(format_runtime_instructions(
                     app.pid if app is not None else None,
                     ngrok.pid if ngrok is not None else None,
                     runtime_log_directory(destination),
+                    port=account.port,
+                    ngrok_binary=ngrok_binary,
                 ))
             completed = True
     except (KeyboardInterrupt, EOFError):

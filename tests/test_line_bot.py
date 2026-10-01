@@ -24,6 +24,7 @@ from zeal.line_bot import (
     LineConsoleBrowser,
     _install_chromium_if_missing,
     NgrokAsset,
+    ngrok_asset_for_current_platform,
     NGROK_AUTHTOKEN_URL,
     SetupError,
     generated_app,
@@ -36,6 +37,7 @@ from zeal.line_bot import (
     _run_setup_with_account,
     existing_tunnel_url,
     ensure_ngrok_config,
+    prepare_ngrok,
     account_creation_detected,
     channel_id_from_url,
     channel_id_from_settings_text,
@@ -92,7 +94,7 @@ class LineBotProjectTests(unittest.TestCase):
         self.assertIn("簡易機器人", output.getvalue())
         self.assertIn("操作瀏覽器", output.getvalue())
         self.assertIn("登入與人類驗證", output.getvalue())
-        self.assertNotIn("ngrok", output.getvalue())
+        self.assertIn("先檢查 ngrok", output.getvalue())
         prompt.assert_called_once()
         self.assertIn("按 Enter", prompt.call_args.args[0])
         with patch("builtins.input", return_value="no"), redirect_stdout(StringIO()):
@@ -145,11 +147,64 @@ class LineBotProjectTests(unittest.TestCase):
             with self.subTest(interruption=interruption.__name__):
                 with (
                     patch("zeal.line_bot.confirm_setup_start", side_effect=interruption),
+                    patch("zeal.line_bot.prepare_ngrok") as preflight,
                     patch("zeal.line_bot.prompt_account_details") as account_prompt,
                     redirect_stdout(StringIO()),
                 ):
                     run_setup(args)
                 account_prompt.assert_not_called()
+                preflight.assert_not_called()
+
+    def test_ngrok_preflight_runs_before_account_selection(self) -> None:
+        args = build_parser().parse_args(["line-bot", "setup"])
+        with (
+            patch("builtins.input", return_value=""),
+            patch("zeal.line_bot.prepare_ngrok", side_effect=SetupError("ngrok unavailable")) as preflight,
+            patch("zeal.line_bot.prompt_account_route") as route,
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()),
+        ):
+            run_setup(args)
+        preflight.assert_called_once_with(None, 8000)
+        route.assert_not_called()
+
+    def test_ngrok_preflight_checks_binary_and_configuration(self) -> None:
+        binary = Path("/tools/ngrok")
+        output = StringIO()
+        with (
+            patch("zeal.line_bot.install_ngrok", return_value=binary) as install,
+            patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
+            patch("zeal.line_bot.existing_tunnel_url", return_value=None),
+            patch("zeal.line_bot.ensure_ngrok_config") as configure,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(prepare_ngrok(None, 8000), binary)
+        install.assert_called_once_with()
+        self.assertEqual(run.call_args.args[0], [str(binary), "version"])
+        configure.assert_called_once_with(binary, None)
+        self.assertIn("ngrok 執行檔已確認", output.getvalue())
+
+        with (
+            patch("zeal.line_bot.install_ngrok", return_value=binary),
+            patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 1)),
+            patch("zeal.line_bot.ensure_ngrok_config") as configure,
+            redirect_stdout(StringIO()),
+        ):
+            with self.assertRaisesRegex(SetupError, "ngrok 無法執行"):
+                prepare_ngrok(None, 8000)
+        configure.assert_not_called()
+
+    def test_ngrok_preflight_reuses_existing_tunnel_without_token_prompt(self) -> None:
+        with (
+            patch("zeal.line_bot.install_ngrok", return_value=Path("ngrok")),
+            patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0)),
+            patch("zeal.line_bot.existing_tunnel_url", return_value="https://example.ngrok.app") as tunnel,
+            patch("zeal.line_bot.ensure_ngrok_config") as configure,
+            redirect_stdout(StringIO()),
+        ):
+            prepare_ngrok(None, 8123)
+        tunnel.assert_called_once_with(8123)
+        configure.assert_not_called()
 
     def test_setup_route_is_chosen_interactively(self) -> None:
         with patch("builtins.input", return_value="1"):
@@ -157,16 +212,17 @@ class LineBotProjectTests(unittest.TestCase):
         with patch("builtins.input", return_value="2"):
             self.assertEqual(prompt_account_route(), "existing")
 
-    def test_existing_account_confirmation_colors_continue_and_cancel_separately(self) -> None:
+    def test_existing_account_confirmation_explains_enter_and_ctrl_c(self) -> None:
         with patch("zeal.line_bot._terminal_supports_color", return_value=True):
             prompt = account_confirmation_prompt("測試帳號")
-        self.assertIn("\x1b[32;1m輸入「確認」繼續\x1b[0m", prompt)
-        self.assertIn("\x1b[31;1m直接按 Enter 取消\x1b[0m", prompt)
+        self.assertIn("收到！會使用「測試帳號」進行接下來的設定", prompt)
+        self.assertIn("\x1b[32;1m請按 Enter 確認繼續\x1b[0m", prompt)
+        self.assertIn("\x1b[31;1m按 Ctrl+C 離開\x1b[0m", prompt)
 
         with patch("zeal.line_bot._terminal_supports_color", return_value=False):
             plain = account_confirmation_prompt("測試帳號")
         self.assertNotIn("\x1b[", plain)
-        self.assertIn("輸入「確認」繼續\n  直接按 Enter 取消", plain)
+        self.assertIn("請按 Enter 確認繼續（按 Ctrl+C 離開）", plain)
 
     def test_existing_account_choice_precedes_project_creation(self) -> None:
         class FakeBrowser:
@@ -184,7 +240,8 @@ class LineBotProjectTests(unittest.TestCase):
 
         args = build_parser().parse_args(["line-bot", "setup"])
         with (
-            patch("builtins.input", side_effect=["", "2", "2", "確認"]),
+            patch("builtins.input", side_effect=["", "2", "2", ""]) as prompt,
+            patch("zeal.line_bot.prepare_ngrok"),
             patch("zeal.line_bot.LineConsoleBrowser", return_value=FakeBrowser()),
             patch("zeal.line_bot.prompt_account_details") as new_account_prompt,
             patch("zeal.line_bot._run_setup_with_account") as complete,
@@ -192,12 +249,13 @@ class LineBotProjectTests(unittest.TestCase):
         ):
             run_setup(args)
         new_account_prompt.assert_not_called()
+        self.assertIn("請輸入編號或完整名稱：", prompt.call_args_list[2].args[0])
         self.assertEqual(complete.call_args.args[1], AccountDetails("讀書會", "", 8000))
         self.assertEqual(
             complete.call_args.kwargs["manager_url"], "https://manager.line.biz/account/two"
         )
 
-    def test_existing_account_confirmation_enter_cancels_before_project_creation(self) -> None:
+    def test_existing_account_confirmation_ctrl_c_cancels(self) -> None:
         class FakeBrowser:
             def __enter__(self) -> FakeBrowser:
                 return self
@@ -211,7 +269,8 @@ class LineBotProjectTests(unittest.TestCase):
         args = build_parser().parse_args(["line-bot", "setup"])
         output = StringIO()
         with (
-            patch("builtins.input", side_effect=["", "2", "1", ""]),
+            patch("builtins.input", side_effect=["", "2", "1", KeyboardInterrupt]),
+            patch("zeal.line_bot.prepare_ngrok"),
             patch("zeal.line_bot.LineConsoleBrowser", return_value=FakeBrowser()),
             patch("zeal.line_bot._run_setup_with_account") as complete,
             redirect_stdout(output),
@@ -236,6 +295,7 @@ class LineBotProjectTests(unittest.TestCase):
         args = build_parser().parse_args(["line-bot", "setup"])
         with (
             patch("builtins.input", side_effect=["", "2", "3"]),
+            patch("zeal.line_bot.prepare_ngrok"),
             patch("zeal.line_bot.LineConsoleBrowser", return_value=browser),
             patch("zeal.line_bot.prompt_account_details", return_value=account),
             patch("zeal.line_bot._run_setup_with_account") as complete,
@@ -352,8 +412,9 @@ class LineBotProjectTests(unittest.TestCase):
                 )
             dependencies.assert_called_once_with(destination)
             self.assertEqual((destination / ".env").read_bytes(), original)
-            self.assertIn("尚未啟用時才選擇 LINE Provider", output.getvalue())
-            self.assertIn("Provider 已綁定，LINE 不提供重新選擇", output.getvalue())
+            self.assertIn("Messaging API 讓 LINE 將訊息交給 Bot", output.getvalue())
+            self.assertIn("Provider 是此 Channel 所屬服務的經營者", output.getvalue())
+            self.assertIn("Provider 已綁定，ZEAL 會沿用現有 Channel", output.getvalue())
 
     def test_background_process_uses_log_file_and_detached_session(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -399,6 +460,7 @@ class LineBotProjectTests(unittest.TestCase):
         class FakeProcess:
             def __init__(self, pid: int) -> None:
                 self.pid = pid
+                self.args = ["ngrok"]
 
             def poll(self) -> None:
                 return None
@@ -447,6 +509,7 @@ class LineBotProjectTests(unittest.TestCase):
             with (
                 redirect_stdout(output),
                 patch("builtins.input", side_effect=["", "1", ""]),
+                patch("zeal.line_bot.prepare_ngrok"),
                 patch("zeal.line_bot.prompt_account_details", return_value=account),
                 patch("zeal.line_bot.prepare_setup_project", return_value=False),
                 patch("zeal.line_bot.existing_tunnel_url", side_effect=[None, "https://example.ngrok.app"]),
@@ -467,8 +530,11 @@ class LineBotProjectTests(unittest.TestCase):
                 run_setup(args)
 
             stop.assert_not_called()
-            self.assertIn("[步驟 1/8]", output.getvalue())
-            self.assertIn("[步驟 8/8]", output.getvalue())
+            for number in range(1, 9):
+                self.assertIn(f"[步驟 {number}/8]", output.getvalue())
+            self.assertIn("Messaging API 讓 LINE 將訊息交給 Bot", output.getvalue())
+            self.assertIn("LINE 無法直接連到你的電腦", output.getvalue())
+            self.assertIn("收到 Bot 回覆後，這次設定才算完成", output.getvalue())
             self.assertIn(NGROK_AUTHTOKEN_URL, output.getvalue())
             self.assertIn("Bot PID：2222", output.getvalue())
             self.assertIn("ngrok PID：1111", output.getvalue())
@@ -573,6 +639,22 @@ class LineBotProjectTests(unittest.TestCase):
             asset.url,
             "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
         )
+
+    def test_ngrok_download_asset_matches_each_supported_os(self) -> None:
+        cases = (
+            ("Windows", "AMD64", "windows", "zip"),
+            ("Darwin", "arm64", "darwin", "zip"),
+            ("Linux", "x86_64", "linux", "tgz"),
+        )
+        for system, machine, expected_system, extension in cases:
+            with (
+                self.subTest(system=system),
+                patch("zeal.line_bot.platform.system", return_value=system),
+                patch("zeal.line_bot.platform.machine", return_value=machine),
+            ):
+                asset = ngrok_asset_for_current_platform()
+                self.assertEqual(asset.system, expected_system)
+                self.assertEqual(asset.extension, extension)
 
     def test_generated_project_excludes_and_quotes_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -961,12 +1043,28 @@ class LineBotProjectTests(unittest.TestCase):
         self.assertNotIn("channel_secret", summary.casefold())
 
     def test_runtime_instructions_identify_both_processes(self) -> None:
-        instructions = format_runtime_instructions(1111, 2222, Path("C:/zeal/logs"))
+        instructions = format_runtime_instructions(
+            1111, 2222, Path("C:/zeal/logs"), port=8765, ngrok_binary="C:/Program Files/ngrok/ngrok.exe"
+        )
         self.assertIn("Bot PID：1111", instructions)
         self.assertIn("ngrok PID：2222", instructions)
         self.assertIn("bot.log", instructions)
         self.assertIn("ngrok.log", instructions)
         self.assertIn("1111", instructions.split("停止本次啟動的程序：")[1])
+        self.assertIn("http://127.0.0.1:4040", instructions)
+        if os.name == "nt":
+            self.assertIn("Stop-Process -Id 2222", instructions)
+            self.assertIn("& 'C:/Program Files/ngrok/ngrok.exe' http 8765", instructions)
+        else:
+            self.assertIn("kill 2222", instructions)
+            self.assertIn("'C:/Program Files/ngrok/ngrok.exe' http 8765", instructions)
+        self.assertIn("更新 Webhook URL", instructions)
+
+    def test_runtime_instructions_for_existing_ngrok_do_not_claim_ownership(self) -> None:
+        instructions = format_runtime_instructions(None, None, Path("C:/zeal/logs"), port=8000)
+        self.assertIn("使用已執行的連線", instructions)
+        self.assertIn("ngrok http 8000", instructions)
+        self.assertNotIn("只停止 ngrok", instructions)
 
     def test_default_browser_profile_is_in_the_working_tree(self) -> None:
         self.assertEqual(

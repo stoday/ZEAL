@@ -18,15 +18,17 @@ their time developing the Bot itself.
 
 ## Install
 
+The commands below work in PowerShell and macOS/Linux terminals.
+
 Install the published package from PyPI:
 
-```powershell
+```text
 uv tool install zeal-builder
 ```
 
 To work from the source checkout instead:
 
-```powershell
+```text
 git clone https://github.com/stoday/ZEAL.git
 cd ZEAL
 uv sync
@@ -34,20 +36,24 @@ uv sync
 
 ## Run
 
-```powershell
+```text
 zeal line-bot setup
 ```
 
 From the source checkout, use:
 
-```powershell
+```text
 uv run zeal line-bot setup
 ```
 
 When Playwright Chromium is missing, ZEAL announces and downloads it. On Linux,
 it also installs required system packages, which may require administrator privileges.
 
-ZEAL explains the steps first, then asks whether to create a new Official Account
+ZEAL explains the steps first. After you press Enter, it checks ngrok on Windows,
+macOS, or Linux, downloads it if missing, and verifies that it runs. ZEAL reuses
+an existing tunnel for the Bot port; otherwise it checks ngrok configuration.
+If preparation fails, setup stops before the LINE account flow. ZEAL then asks
+whether to create a new Official Account
 or continue with an existing one. For a new account, enter its details and choose
 an industry in the terminal; ZEAL fills the form in the visible LINE browser.
 For an existing account, sign in and select one from the live list of accounts you
@@ -68,6 +74,15 @@ Overwritten project files or credentials are moved to a numbered backup first.
 When setup finishes, the command exits while the Bot and ngrok keep running.
 The summary shows their PIDs, log paths, and commands to inspect or stop them.
 
+Open <http://127.0.0.1:4040> to check the local ngrok tunnel. In PowerShell,
+`(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded` checks whether
+the inspector port is listening. To stop only ngrok, use the summary's
+`Stop-Process -Id <ngrok PID>`. To restart it, run the full ngrok command shown
+in the summary in a new terminal (`ngrok http 8000` if ngrok is on `PATH`;
+replace 8000 with the Bot port). If the public URL changes, update the LINE
+Developers Console Webhook URL with `/callback`, click Verify, and confirm
+Use webhook is enabled.
+
 ZEAL sets and tests the Webhook URL through LINE's documented Messaging API,
 then confirms that Use webhook is enabled. At the end, it opens a generated
 add-friend QR code in the visible browser and prints the add-friend link. Scan
@@ -79,7 +94,7 @@ Bot's reply. Keep `.env` private.
 
 ## Other commands
 
-```powershell
+```text
 # Stop the Bot and ngrok when setup finishes instead of leaving them running
 zeal line-bot setup --stop-after-setup
 

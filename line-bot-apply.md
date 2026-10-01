@@ -4,7 +4,7 @@
 
 執行環境為 Windows PowerShell、Python、Flask 與 ngrok。這是本機開發與測試流程；正式服務再將同一支程式部署到具有效 HTTPS 憑證的主機即可。
 
-> 若使用本專案提供的 ZEAL 工具，可先執行 `uv sync`，再執行 `uv run zeal line-bot setup`。ZEAL 會先說明流程，按 Enter 後選擇建立新官方帳號，或從登入者可管理的清單選擇並確認既有帳號。新建時才需填寫申請資料。當 LINE 顯示可用 Provider 時，ZEAL 會在終端列出編號讓你選擇既有 Provider 或輸入新 Provider 名稱；不必預先知道或記憶 Provider 名稱。它會建立 `line-bot-<名稱>/`、處理 ngrok、在可見瀏覽器自動操作 LINE Console，並將讀取到的密鑰寫入被 Git 忽略的 `.env`。灰色遮罩表示 ZEAL 正在操作、網頁暫不接受手動輸入；綠色提示表示交由你操作。登入、OTP/MFA、CAPTCHA 與其他人類驗證仍須由帳號本人在同一個瀏覽器完成。完成後 Bot 與 ngrok 留在背景，摘要會顯示 PID、日誌和停止方法。Provider 不可日後移轉，因此不能由程式猜測。
+> 若使用本專案提供的 ZEAL 工具，可先執行 `uv sync`，再執行 `uv run zeal line-bot setup`。ZEAL 會先說明流程，按 Enter 後檢查 ngrok，缺少時先下載並確認能執行；若指定埠已有通道就沿用，否則先確認 ngrok 設定，再開始 LINE 帳號流程。接著選擇建立新官方帳號，或從登入者可管理的清單選擇並確認既有帳號。新建時才需填寫申請資料。當 LINE 顯示可用 Provider 時，ZEAL 會在終端列出編號讓你選擇既有 Provider 或輸入新 Provider 名稱；不必預先知道或記憶 Provider 名稱。它會建立 `line-bot-<名稱>/`、在可見瀏覽器自動操作 LINE Console，並將讀取到的密鑰寫入被 Git 忽略的 `.env`。灰色遮罩表示 ZEAL 正在操作、網頁暫不接受手動輸入；綠色提示表示交由你操作。登入、OTP/MFA、CAPTCHA 與其他人類驗證仍須由帳號本人在同一個瀏覽器完成。完成後 Bot 與 ngrok 留在背景，摘要會顯示 PID、日誌和停止方法。Provider 不可日後移轉，因此不能由程式猜測。
 
 若本機專案或 `.env` 已有不同資料，ZEAL 會顯示原路徑與可用的新專案名稱，當場詢問要覆寫、採用建議名稱，或自行命名；覆寫前先備份原資料，選完即可接續流程。
 Provider 只在首次啟用 Messaging API 時選擇；已有 Channel 的帳號會沿用原本綁定的 Provider，終端機會明確顯示這個狀態。
@@ -100,6 +100,8 @@ Forwarding  https://abc123.ngrok-free.app -> http://localhost:8000
 本文件稍後會將 `https://abc123.ngrok-free.app/callback` 填入 LINE 的 Webhook URL。免費方案的網址可能在重新啟動 ngrok 後改變；改變後需更新 LINE Console 中的 URL。
 
 > 若已將 `ngrok` 放到系統 `PATH`，上述指令可簡化為 `ngrok http 8000`。
+
+若使用 `zeal line-bot setup`，完成摘要會列出 ngrok 的 PID 與完整重啟指令。可開啟 <http://127.0.0.1:4040> 查看本機通道，或在 PowerShell 執行 `(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded` 確認管理埠是否仍在監聽。要只停止 ngrok，先核對摘要中的 PID，再執行 `Stop-Process -Id <ngrok PID>`；重新啟動時，在新的 PowerShell 視窗執行摘要所列的完整 ngrok 指令，保持視窗開啟即可。若是自行在終端啟動的 ngrok，也可在原視窗按 `Ctrl+C` 停止，再執行原本的 `ngrok http <Bot 埠>` 指令。重啟後從狀態頁確認新的 HTTPS 網址；網址若改變，需更新 LINE Webhook URL、按 Verify，並確認 Use webhook 已開啟。
 
 ## 3. 建立 LINE Official Account 與 Messaging API
 
