@@ -39,6 +39,7 @@ LINE_CONSOLE_URL = "https://developers.line.biz/console/"
 LINE_OFFICIAL_ACCOUNT_ENTRY_URL = "https://entry.line.biz/form/entry/unverified"
 LINE_API_BASE = "https://api.line.me/v2/bot"
 NGROK_DOWNLOAD_BASE = "https://bin.equinox.io/c/bNyj1mQVY4c"
+NGROK_SIGNUP_URL = "https://dashboard.ngrok.com/signup"
 NGROK_AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 
 # These are detection hints, not selectors to click.  A match always hands the
@@ -451,7 +452,7 @@ def confirm_setup_start() -> None:
     """Explain the guided setup before collecting data or changing anything."""
     print(f"\n{_accent('◆ ZEAL 將協助您建立或接續 LINE 官方帳號，並設定能回覆訊息的簡易機器人。', '36;1')}")
     print("ZEAL 會代您開啟並操作瀏覽器；新建帳號時會填寫申請資料。登入與人類驗證仍由您親自完成。")
-    print("開始後會先檢查 ngrok；若尚未安裝，ZEAL 會嘗試下載，再進入 LINE 帳號流程。")
+    print("開始後會先檢查 ngrok；若尚未安裝，ZEAL 會嘗試下載。若需建立新通道，ZEAL 會引導你取得 ngrok Authtoken。")
     print()
     if input("若同意開始，請按 Enter；按 Ctrl+C 取消：").strip():
         raise SetupError("尚未開始設定；同意時請直接按 Enter。")
@@ -1035,9 +1036,11 @@ def prepare_ngrok(argument_token: str | None, port: int) -> Path:
 def ngrok_authtoken(argument_value: str | None) -> str:
     if not argument_value and not os.environ.get("NGROK_AUTHTOKEN"):
         print("ngrok Authtoken 用來建立公開 HTTPS 連線，讓 LINE 能把訊息送到本機 Bot。")
-        print(f"請從 ngrok Dashboard 複製你的 Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
+        print(f"1. 尚無 ngrok 帳號：開啟 {_terminal_link(NGROK_SIGNUP_URL)}，註冊並登入；已有帳號則直接登入。")
+        print(f"2. 登入後開啟 {_terminal_link(NGROK_AUTHTOKEN_URL)}，複製頁面上的 Authtoken。")
+        print("3. 回到此終端機貼上 Authtoken 並按 Enter；輸入不會顯示，ZEAL 會替你儲存到 ngrok 設定。")
     return argument_value or os.environ.get("NGROK_AUTHTOKEN") or getpass.getpass(
-        "ngrok Authtoken（輸入不會顯示；可先設定 NGROK_AUTHTOKEN）："
+        "貼上 ngrok Authtoken（輸入不會顯示）："
     )
 
 
@@ -1054,6 +1057,25 @@ def configure_ngrok(binary: Path, token: str) -> None:
         raise SetupError("ngrok Authtoken 設定失敗；請確認 token 後重試。")
 
 
+def _ngrok_config_has_authtoken(check_output: str) -> bool:
+    """A successful `config check` validates syntax, even without an authtoken."""
+    match = re.search(r"(?m)^Valid configuration file at (.+)$", check_output)
+    if match is None:
+        return False
+    try:
+        config = Path(match.group(1).strip()).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    for line in config.splitlines():
+        token = re.match(r"^authtoken\s*:\s*(.*?)\s*$", line)
+        if token is None:
+            continue
+        value = token.group(1).split(" #", 1)[0].strip().strip("\"'")
+        if value and value not in ("null", "~"):
+            return True
+    return False
+
+
 def ensure_ngrok_config(binary: Path, argument_token: str | None) -> None:
     """Reuse a working ngrok login, unless the caller supplied a new token."""
     token = argument_token or os.environ.get("NGROK_AUTHTOKEN")
@@ -1063,7 +1085,7 @@ def ensure_ngrok_config(binary: Path, argument_token: str | None) -> None:
     result = subprocess.run(
         [str(binary), "config", "check"], capture_output=True, text=True, check=False
     )
-    if result.returncode:
+    if result.returncode or not _ngrok_config_has_authtoken(result.stdout or ""):
         configure_ngrok(binary, ngrok_authtoken(None))
 
 

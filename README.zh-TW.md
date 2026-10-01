@@ -11,7 +11,7 @@ ZEAL 的開發靈感來自 [Zona](https://github.com/zonawang)。希望能協助
 - Python 3.11 以上
 - [uv](https://docs.astral.sh/uv/)
 - 可登入 LINE Business 的 LINE 帳號
-- ngrok 帳號與 authtoken
+- [ngrok 帳號](https://dashboard.ngrok.com/signup)與[在 Dashboard 取得的 Authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
 
 ## 安裝
 
@@ -45,7 +45,7 @@ uv run zeal line-bot setup
 
 缺少 Playwright Chromium 時，ZEAL 會先告知並下載；在 Linux 上也會安裝所需的系統套件，可能需要管理員權限。
 
-ZEAL 會先說明流程。按 Enter 後，它會在 Windows、macOS 或 Linux 檢查 ngrok；若找不到，會先下載對應版本並確認可執行。若指定的 Bot 埠已有 ngrok 通道，就沿用；否則先確認 ngrok 設定。準備失敗會在 LINE 流程開始前提示處理。接著選擇「建立新的官方帳號」或「接續既有官方帳號」。新建時，依終端機指示輸入帳號資料與業種，ZEAL 會在可見瀏覽器填寫表單。接續時，登入 LINE 後從目前可管理的官方帳號清單選擇並確認，不需重填申請資料。
+ZEAL 會先說明流程。按 Enter 後，它會在 Windows、macOS 或 Linux 檢查 ngrok；若找不到，會先下載對應版本並確認可執行。若指定的 Bot 埠已有 ngrok 通道，就沿用；否則先確認 ngrok 設定。缺少 Authtoken 時，ZEAL 會顯示註冊、登入及複製 token 的網址，讓你在終端機隱藏輸入後存入 ngrok 設定。準備失敗會在 LINE 流程開始前提示處理。接著選擇「建立新的官方帳號」或「接續既有官方帳號」。新建時，依終端機指示輸入帳號資料與業種，ZEAL 會在可見瀏覽器填寫表單。接續時，登入 LINE 後從目前可管理的官方帳號清單選擇並確認，不需重填申請資料。
 只有首次啟用 Messaging API 時才會選擇 Provider；若選定帳號已有 Channel，ZEAL 會說明 Provider 已綁定，直接沿用既有 Channel。
 畫面顯示灰色遮罩時，ZEAL 正在操作，網頁暫不接受手動輸入；顯示綠色提示時才由你操作。
 LINE 要求登入、OTP／MFA 或人類驗證時，請在同一個瀏覽器完成；ZEAL 接手後會重新鎖定網頁。

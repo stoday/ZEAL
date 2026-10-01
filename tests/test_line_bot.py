@@ -26,6 +26,7 @@ from zeal.line_bot import (
     NgrokAsset,
     ngrok_asset_for_current_platform,
     NGROK_AUTHTOKEN_URL,
+    NGROK_SIGNUP_URL,
     SetupError,
     generated_app,
     format_completion_summary,
@@ -37,6 +38,7 @@ from zeal.line_bot import (
     _run_setup_with_account,
     existing_tunnel_url,
     ensure_ngrok_config,
+    ngrok_authtoken,
     prepare_ngrok,
     account_creation_detected,
     channel_id_from_url,
@@ -444,17 +446,50 @@ class LineBotProjectTests(unittest.TestCase):
             self.assertIsNone(existing_tunnel_url(7000))
 
     def test_existing_ngrok_config_does_not_ask_for_token_again(self) -> None:
-        with (
-            patch.dict(os.environ, {"NGROK_AUTHTOKEN": ""}),
-            patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as check,
-            patch("zeal.line_bot.ngrok_authtoken") as prompt,
-            patch("zeal.line_bot.configure_ngrok") as configure,
-        ):
-            ensure_ngrok_config(Path("ngrok"), None)
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "ngrok.yml"
+            config.write_text("version: 3\nauthtoken: saved-token\n", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"NGROK_AUTHTOKEN": ""}),
+                patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0, f"Valid configuration file at {config}\n")) as check,
+                patch("zeal.line_bot.ngrok_authtoken") as prompt,
+                patch("zeal.line_bot.configure_ngrok") as configure,
+            ):
+                ensure_ngrok_config(Path("ngrok"), None)
 
         self.assertEqual(check.call_args.args[0], ["ngrok", "config", "check"])
         prompt.assert_not_called()
         configure.assert_not_called()
+
+    def test_ngrok_config_check_without_token_prompts_before_line_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "ngrok.yml"
+            for contents in (None, "version: 3\n"):
+                with self.subTest(contents=contents):
+                    if contents is not None:
+                        config.write_text(contents, encoding="utf-8")
+                    with (
+                        patch.dict(os.environ, {"NGROK_AUTHTOKEN": ""}),
+                        patch("zeal.line_bot.subprocess.run", return_value=subprocess.CompletedProcess([], 0, f"Valid configuration file at {config}\n")),
+                        patch("zeal.line_bot.ngrok_authtoken", return_value="new-token") as prompt,
+                        patch("zeal.line_bot.configure_ngrok") as configure,
+                    ):
+                        ensure_ngrok_config(Path("ngrok"), None)
+                    prompt.assert_called_once_with(None)
+                    configure.assert_called_once_with(Path("ngrok"), "new-token")
+
+    def test_ngrok_token_prompt_explains_registration_and_dashboard(self) -> None:
+        output = StringIO()
+        with (
+            patch.dict(os.environ, {"NGROK_AUTHTOKEN": ""}),
+            patch("zeal.line_bot.getpass.getpass", return_value="new-token") as hidden_input,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(ngrok_authtoken(None), "new-token")
+        self.assertIn(NGROK_SIGNUP_URL, output.getvalue())
+        self.assertIn(NGROK_AUTHTOKEN_URL, output.getvalue())
+        self.assertIn("回到此終端機貼上", output.getvalue())
+        hidden_input.assert_called_once()
 
     def test_successful_setup_leaves_started_services_running(self) -> None:
         class FakeProcess:

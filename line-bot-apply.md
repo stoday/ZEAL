@@ -76,9 +76,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## 2. 安裝並設定 ngrok
 
-1. 到 [ngrok](https://ngrok.com/download) 註冊帳號並下載 Windows 版。
+1. 到 [ngrok 註冊頁](https://dashboard.ngrok.com/signup)建立帳號並登入，再到[下載頁](https://ngrok.com/download)下載 Windows 版。
 2. 解壓縮 `ngrok.exe` 到自己可管理的位置，例如 `C:\tools\ngrok\`，或依 ngrok 安裝頁的方式安裝。
-3. 在 ngrok Dashboard 複製你的 **authtoken**。
+3. 在 [ngrok Dashboard 的 Authtoken 頁](https://dashboard.ngrok.com/get-started/your-authtoken)複製你的 **Authtoken**。
 4. 在 PowerShell 執行一次：
 
 ```powershell

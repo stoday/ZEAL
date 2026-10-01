@@ -14,7 +14,7 @@ their time developing the Bot itself.
 - Python 3.11 or later
 - [uv](https://docs.astral.sh/uv/)
 - A LINE account that can sign in to LINE Business
-- An ngrok account and authtoken
+- An [ngrok account](https://dashboard.ngrok.com/signup) and an [Authtoken from its dashboard](https://dashboard.ngrok.com/get-started/your-authtoken)
 
 ## Install
 
@@ -52,6 +52,8 @@ it also installs required system packages, which may require administrator privi
 ZEAL explains the steps first. After you press Enter, it checks ngrok on Windows,
 macOS, or Linux, downloads it if missing, and verifies that it runs. ZEAL reuses
 an existing tunnel for the Bot port; otherwise it checks ngrok configuration.
+If the Authtoken is missing, ZEAL shows where to register, log in, and copy it,
+then accepts it through a hidden terminal prompt and saves it to ngrok.
 If preparation fails, setup stops before the LINE account flow. ZEAL then asks
 whether to create a new Official Account
 or continue with an existing one. For a new account, enter its details and choose
