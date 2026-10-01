@@ -10,6 +10,14 @@ from typing import Sequence
 from zeal.line_bot import run_resume, run_setup
 
 
+def _setup_port(value: str) -> int:
+    """Let the guided setup correct a malformed --port interactively."""
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="zeal",
@@ -24,12 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     line_bot = commands.add_parser(
         "line-bot",
-        help="Create and configure a LINE Messaging API echo bot.",
+        help="Set up a LINE Messaging API echo bot.",
     )
     line_bot_commands = line_bot.add_subparsers(dest="line_bot_command", required=True)
     setup = line_bot_commands.add_parser(
         "setup",
-        help="Create a local project, ngrok tunnel, and assist LINE Console setup.",
+        help="Create or continue an Official Account, then configure a local Bot and Webhook.",
     )
     setup.add_argument(
         "--output",
@@ -38,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument(
         "--port",
-        type=int,
+        type=_setup_port,
         default=8000,
         help="Local port for the generated Flask app (default: 8000).",
     )
