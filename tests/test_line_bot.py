@@ -625,14 +625,14 @@ class LineBotProjectTests(unittest.TestCase):
             output = StringIO()
             with (
                 redirect_stdout(output),
-                patch("builtins.input", side_effect=["", "", "1", ""]),
+                patch("builtins.input", side_effect=["", "", "1", ""]) as prompt,
                 patch("zeal.line_bot.prepare_ngrok"),
                 patch("zeal.line_bot.prompt_account_details", return_value=account),
                 patch("zeal.line_bot.prepare_setup_project", return_value=False),
                 patch("zeal.line_bot.existing_tunnel_url", side_effect=[None, "https://example.ngrok.app"]),
                 patch("zeal.line_bot.local_port_listening", side_effect=[False, True]),
                 patch("zeal.line_bot.install_ngrok", return_value=Path("ngrok")),
-                patch("zeal.line_bot.ensure_ngrok_config"),
+                patch("zeal.line_bot.ensure_ngrok_config") as configure_ngrok,
                 patch("zeal.line_bot.tunnel_url", return_value=(ngrok, "https://example.ngrok.app")),
                 patch("zeal.line_bot.LineConsoleBrowser", return_value=FakeBrowser()),
                 patch("zeal.line_bot.write_credentials"),
@@ -647,6 +647,8 @@ class LineBotProjectTests(unittest.TestCase):
                 run_setup(args)
 
             stop.assert_not_called()
+            configure_ngrok.assert_not_called()
+            self.assertIn("按 Enter 完成設定並結束指令（Bot 會持續在背景執行）", prompt.call_args.args[0])
             for number in range(1, 9):
                 self.assertIn(f"[步驟 {number}/8]", output.getvalue())
             self.assertIn("Messaging API 讓 LINE 將訊息交給 Bot", output.getvalue())
@@ -674,6 +676,19 @@ class LineBotProjectTests(unittest.TestCase):
         with patch("zeal.line_bot.line_api_request", return_value={"success": False, "statusCode": 400}):
             with self.assertRaisesRegex(SetupError, "400"):
                 set_and_test_webhook("private-token", url)
+
+    def test_webhook_retries_temporary_gateway_failure_without_user_input(self) -> None:
+        url = "https://example.ngrok.app/callback"
+        with (
+            patch("zeal.line_bot.line_api_request", side_effect=[
+                {}, {"success": False, "statusCode": 502},
+                {"success": True, "statusCode": 200},
+            ]) as request,
+            patch("zeal.line_bot.time.sleep") as wait,
+        ):
+            set_and_test_webhook("private-token", url)
+        self.assertEqual(request.call_count, 3)
+        wait.assert_called_once_with(1)
 
     def test_webhook_falls_back_to_manager_and_checks_active_state(self) -> None:
         browser = LineConsoleBrowser(True, Path(tempfile.gettempdir()) / "zeal-test-profile")

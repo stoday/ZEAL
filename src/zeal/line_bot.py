@@ -178,10 +178,15 @@ def set_and_test_webhook(token: str, webhook_url: str) -> None:
     if not webhook_url.startswith("https://") or len(webhook_url) > 500:
         raise SetupError("Webhook URL 必須是長度不超過 500 字元的 HTTPS 網址。")
     line_api_request(token, "PUT", "/channel/webhook/endpoint", {"endpoint": webhook_url})
-    result = line_api_request(token, "POST", "/channel/webhook/test", {"endpoint": webhook_url})
-    if result.get("success") is not True:
+    for attempt in range(5):
+        result = line_api_request(token, "POST", "/channel/webhook/test", {"endpoint": webhook_url})
+        if result.get("success") is True:
+            return
         status = result.get("statusCode")
-        raise SetupError(f"LINE Webhook 驗證未成功（回應狀態：{status if isinstance(status, int) else '未知'}）。")
+        if status not in (502, 503, 504) or attempt == 4:
+            raise SetupError(f"LINE Webhook 驗證未成功（回應狀態：{status if isinstance(status, int) else '未知'}）。")
+        print(f"LINE 暫時無法連上 Webhook（{status}）；{attempt + 1} 秒後自動重試。")
+        time.sleep(attempt + 1)
 
 
 def webhook_endpoint_state(token: str) -> dict[str, Any]:
@@ -2189,7 +2194,9 @@ def start_setup_runtime(
                     print("已找到對應此連接埠的 ngrok 通道，將沿用目前網址。")
                 else:
                     binary = install_ngrok()
-                    ensure_ngrok_config(binary, args.ngrok_authtoken)
+                    if not getattr(args, "ngrok_configured", False):
+                        ensure_ngrok_config(binary, args.ngrok_authtoken)
+                        args.ngrok_configured = True
                     ngrok, public_url = tunnel_url(binary, account.port, directory)
                 print(f"ngrok 公開網址：{_terminal_link(public_url)}")
             else:
@@ -2240,6 +2247,7 @@ def start_setup_runtime(
                 raise SetupError("已停止於公開網址／Bot 啟動；本機專案與憑證仍保留。") from error
             if choice == options[2]:
                 args.ngrok_authtoken = getpass.getpass("新的 ngrok Authtoken（輸入時不顯示）：").strip()
+                args.ngrok_configured = False
                 args.public_url = None
             if choice == options[3]:
                 args.public_url = prompt_valid_public_url()
@@ -2275,6 +2283,7 @@ def run_setup(args: Any) -> None:
         args.public_url = prompt_public_url()
         if args.public_url is None:
             prepare_ngrok(args.ngrok_authtoken, args.port)
+            args.ngrok_configured = True
         else:
             print("將使用自備 HTTPS 網址；啟動 Bot 後會請 LINE 測試能否連上。")
         route = prompt_account_route()
@@ -2543,7 +2552,11 @@ def _run_setup_with_account(
             print(f"加好友 QR Code：{qr_path}")
             retry_setup_step("顯示加好友 QR Code", lambda: browser.show_add_friend_qr(qr_path), browser)
             while True:
-                input("用手機掃描瀏覽器顯示的 QR Code，傳送訊息並收到 Bot 回覆後，按 Enter 顯示結果：")
+                ending = (
+                    "Bot 會持續在背景執行" if args.keep_running
+                    else "本次啟動的 Bot 將停止"
+                )
+                input(f"用手機掃描 QR Code，傳送訊息並確認收到 Bot 回覆；按 Enter 完成設定並結束指令（{ending}）：")
                 if getattr(args, "public_url", None) is not None:
                     try:
                         result = line_api_request(
