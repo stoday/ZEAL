@@ -14,7 +14,7 @@ their time developing the Bot itself.
 - Python 3.11 or later
 - [uv](https://docs.astral.sh/uv/)
 - A LINE account that can sign in to LINE Business
-- An [ngrok account](https://dashboard.ngrok.com/signup) and an [Authtoken from its dashboard](https://dashboard.ngrok.com/get-started/your-authtoken)
+- A public HTTPS URL already forwarding to the local Bot, or an [ngrok account](https://dashboard.ngrok.com/signup) with an [Authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
 
 ## Install
 
@@ -49,12 +49,12 @@ uv run zeal line-bot setup
 When Playwright Chromium is missing, ZEAL announces and downloads it. On Linux,
 it also installs required system packages, which may require administrator privileges.
 
-ZEAL explains the steps first. After you press Enter, it checks ngrok on Windows,
-macOS, or Linux, downloads it if missing, and verifies that it runs. ZEAL reuses
-an existing tunnel for the Bot port; otherwise it checks ngrok configuration.
-If the Authtoken is missing, ZEAL shows where to register, log in, and copy it,
-then accepts it through a hidden terminal prompt and saves it to ngrok.
-If preparation fails, setup stops before the LINE account flow. ZEAL then asks
+ZEAL explains the steps first. After you press Enter, choose an existing public
+HTTPS URL or let ngrok create a test URL. Your own URL must forward to the local
+Bot port; enter its base URL or the full URL ending in `/callback`. After starting
+the Bot, ZEAL asks LINE to test that URL. If you choose ngrok, ZEAL checks and
+downloads it if needed, reuses a tunnel for the Bot port when available, and
+guides you to register and enter an Authtoken if needed. ZEAL then asks
 whether to create a new Official Account
 or continue with an existing one. For a new account, enter its details and choose
 an industry in the terminal; ZEAL fills the form in the visible LINE browser.
@@ -73,10 +73,11 @@ you rerun setup, ZEAL reuses an unchanged local project. If project files or
 available numbered project name. Choose to overwrite, use the suggested new
 project name, or enter your own; setup then continues without repeating earlier steps.
 Overwritten project files or credentials are moved to a numbered backup first.
-When setup finishes, the command exits while the Bot and ngrok keep running.
-The summary shows their PIDs, log paths, and commands to inspect or stop them.
+When setup finishes, the Bot keeps running; ngrok also stays running if selected.
+The summary shows PIDs, log paths, and commands to inspect or stop them. If you
+use your own URL, keep its forwarding to the Bot active yourself.
 
-Open <http://127.0.0.1:4040> to check the local ngrok tunnel. In PowerShell,
+If you use ngrok, open <http://127.0.0.1:4040> to check its local tunnel. In PowerShell,
 `(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded` checks whether
 the inspector port is listening. To stop only ngrok, use the summary's
 `Stop-Process -Id <ngrok PID>`. To restart it, run the full ngrok command shown
@@ -97,7 +98,7 @@ Bot's reply. Keep `.env` private.
 ## Other commands
 
 ```text
-# Stop the Bot and ngrok when setup finishes instead of leaving them running
+# Stop the Bot and ngrok (if used) when setup finishes
 zeal line-bot setup --stop-after-setup
 
 # Manually provide credentials for an existing Messaging API channel

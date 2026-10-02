@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import getpass
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -450,12 +451,67 @@ def require_webhook_enabled(value: bool) -> bool:
 
 def confirm_setup_start() -> None:
     """Explain the guided setup before collecting data or changing anything."""
-    print(f"\n{_accent('◆ ZEAL 將協助您建立或接續 LINE 官方帳號，並設定能回覆訊息的簡易機器人。', '36;1')}")
-    print("ZEAL 會代您開啟並操作瀏覽器；新建帳號時會填寫申請資料。登入與人類驗證仍由您親自完成。")
-    print("開始後會先檢查 ngrok；若尚未安裝，ZEAL 會嘗試下載。若需建立新通道，ZEAL 會引導你取得 ngrok Authtoken。")
+    print(f"\n{_accent('◆ ZEAL 將協助您建立或接續 LINE 官方帳號設定步驟，並自動建置一個能回覆訊息的簡易 LINE Bot。', '36;1')}")
+    print("ZEAL 會開啟瀏覽器協助設定；若電腦缺少所需的瀏覽器，會協助下載。新建帳號時會依您提供的資料填寫申請表。登入、驗證碼及其他人類驗證仍需由您親自完成。")
+    print("由於 LINE 需要一個公開的 HTTPS 網址，才能把訊息送到您電腦上的 Bot。請準備好可以轉送至這台電腦的網址；若沒有，ZEAL 將引導您使用 ngrok 的免費方案建立測試用網址。")
+    print("選擇 ngrok 時，ZEAL 會檢查並在需要時下載程式，再引導您註冊、取得 Authtoken。免費方案有使用限制，網址可能在重新啟動後改變。")
     print()
     if input("若同意開始，請按 Enter；按 Ctrl+C 取消：").strip():
         raise SetupError("尚未開始設定；同意時請直接按 Enter。")
+
+
+def validate_public_url(value: str) -> str:
+    """Accept a public HTTPS base URL, or a complete /callback URL."""
+    value = value.strip().rstrip("/")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise SetupError("請輸入有效的公開 HTTPS 網址。") from error
+    if (parsed.scheme != "https" or not host or not host.strip(".")
+        or parsed.username or parsed.password or parsed.query or parsed.fragment
+        or any(char.isspace() for char in value)):
+        raise SetupError("請輸入公開 HTTPS 網址，不要包含帳密、查詢參數或 # 片段。")
+    if host.lower() == "localhost" or host.lower().endswith(".localhost"):
+        raise SetupError("localhost 只有您的電腦能連線；請輸入公開 HTTPS 網址。")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if "." not in host or host.lower().endswith((".local", ".internal", ".test", ".invalid")):
+            raise SetupError("請輸入可從網際網路連線的公開 HTTPS 網址。")
+    else:
+        if not address.is_global:
+            raise SetupError("請輸入可從網際網路連線的公開 HTTPS 網址。")
+    if port is not None and not 1 <= port <= 65535:
+        raise SetupError("HTTPS 網址的連接埠無效。")
+    base = value[:-len("/callback")] if parsed.path.endswith("/callback") else value
+    if len(f"{base}/callback") > 500:
+        raise SetupError("Webhook 網址不可超過 500 字元。")
+    return base
+
+
+def prompt_public_url() -> str | None:
+    """Choose the connection before ngrok can be downloaded or configured."""
+    print("\nLINE 要透過哪個網址連到這台電腦的 Bot？")
+    print("  1. 使用 ngrok 建立測試用公開網址（可使用免費方案）")
+    print("  2. 使用已有的公開 HTTPS 網址（須已轉送到這台電腦的 Bot 連接埠）")
+    while True:
+        choice = input("請輸入 1 或 2（按 Enter 選 1）：").strip()
+        if choice in ("", "1"):
+            return None
+        if choice == "2":
+            return prompt_valid_public_url()
+        print("請輸入 1 或 2。")
+
+
+def prompt_valid_public_url() -> str:
+    while True:
+        value = input("公開 HTTPS 網址（例：https://bot.example.com；可含 /callback）：")
+        try:
+            return validate_public_url(value)
+        except SetupError as error:
+            print(error)
 
 
 def setup_step(number: int, description: str, explanation: str | None = None) -> None:
@@ -773,15 +829,16 @@ def format_completion_summary(
     *,
     webhook_configured: bool,
     keep_running: bool,
+    using_ngrok: bool = True,
 ) -> str:
     """Describe the user's resulting LINE setup without exposing credentials."""
     channel_url = messaging_api_url(messaging.channel_id)
     webhook_state = "已儲存、Verify 成功並啟用 Use webhook" if webhook_configured else "尚待在 Console 手動確認"
     company_name = account.company_name or "未提供"
+    services = "Bot 與 ngrok" if using_ngrok else "Bot"
     runtime_state = (
-        "Bot 與 ngrok：指令結束後持續在背景執行。"
-        if keep_running
-        else "本次啟動的 Bot 與 ngrok：此摘要顯示後將停止。"
+        f"{services}：指令結束後持續在背景執行。"
+        if keep_running else f"本次啟動的 {services}：此摘要顯示後將停止。"
     )
     return "\n".join(
         (
@@ -814,11 +871,30 @@ def format_runtime_instructions(
     *,
     port: int,
     ngrok_binary: str | None = None,
+    using_ngrok: bool = True,
 ) -> str:
     """Show how to inspect, stop, and restart the services left by setup."""
     pids = [pid for pid in (bot_pid, ngrok_pid) if pid is not None]
     bot_log = log_directory / "bot.log"
     ngrok_log = log_directory / "ngrok.log"
+    if not using_ngrok:
+        lines = [
+            "\n背景程序已啟動：",
+            f"Bot PID：{bot_pid}；日誌：{bot_log}" if bot_pid is not None
+            else f"Bot：沿用本機已執行的程序；日誌：{bot_log}",
+            "請保持自備公開網址轉送到本機 Bot；若網址變更，須更新 LINE Webhook URL 並重新驗證。",
+        ]
+        if os.name == "nt":
+            if bot_pid is not None:
+                lines.append(f"PowerShell 停止本次啟動的 Bot：Stop-Process -Id {bot_pid}")
+            quoted_bot_log = str(bot_log).replace("'", "''")
+            lines.append(f"PowerShell 查看 Bot 日誌：Get-Content -Tail 30 -Wait -LiteralPath '{quoted_bot_log}'")
+        else:
+            if bot_pid is not None:
+                lines.append(f"停止本次啟動的 Bot：kill {bot_pid}")
+            lines.append(f"查看 Bot 日誌：tail -f {shlex.quote(str(bot_log))}")
+        lines.append("若停止了 Bot，請依產生專案的 README.md 重新啟動。")
+        return "\n".join(lines)
     lines = [
         "\n背景程序已啟動：",
         (
@@ -2096,30 +2172,35 @@ def change_project_port(directory: Path, credentials: Credentials, old_port: int
 def start_setup_runtime(
     args: Any, account: AccountDetails, directory: Path, credentials: Credentials
 ) -> tuple[AccountDetails, subprocess.Popen[str] | None, subprocess.Popen[str] | None, str]:
-    """Start ngrok and the Bot, with a chance to fix the port or token in place."""
+    """Start the chosen public connection and Bot, with in-place recovery."""
     while True:
         ngrok: subprocess.Popen[str] | None = None
         app: subprocess.Popen[str] | None = None
+        public_url = getattr(args, "public_url", None)
         try:
             setup_step(
                 5, "建立公開 HTTPS 通道",
-                f"LINE 無法直接連到你的電腦；ZEAL 會用 ngrok 將公開網址轉送到本機 Bot 的 {account.port} 埠。",
+                f"LINE 無法直接連到你的電腦；公開網址須轉送到本機 Bot 的 {account.port} 埠。",
             )
-            print(f"取得 ngrok Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
-            public_url = existing_tunnel_url(account.port)
-            if public_url:
-                print("已找到對應此連接埠的 ngrok 通道，將沿用目前網址。")
+            if public_url is None:
+                print(f"取得 ngrok Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
+                public_url = existing_tunnel_url(account.port)
+                if public_url:
+                    print("已找到對應此連接埠的 ngrok 通道，將沿用目前網址。")
+                else:
+                    binary = install_ngrok()
+                    ensure_ngrok_config(binary, args.ngrok_authtoken)
+                    ngrok, public_url = tunnel_url(binary, account.port, directory)
+                print(f"ngrok 公開網址：{_terminal_link(public_url)}")
             else:
-                binary = install_ngrok()
-                ensure_ngrok_config(binary, args.ngrok_authtoken)
-                ngrok, public_url = tunnel_url(binary, account.port, directory)
+                print(f"自備公開網址：{_terminal_link(public_url)}")
             callback_url = f"{public_url}/callback"
-            print(f"ngrok 公開網址：{_terminal_link(public_url)}")
 
             setup_step(
                 6, "啟動本機 Bot",
                 f"Bot 會在本機 {account.port} 埠接收 LINE 訊息並回覆；ZEAL 會確認它已啟動或沿用現有程序。",
             )
+            connection_tested = False
             if local_port_listening(account.port):
                 result = line_api_request(
                     credentials.channel_access_token, "POST", "/channel/webhook/test",
@@ -2127,6 +2208,7 @@ def start_setup_runtime(
                 )
                 if result.get("success") is not True:
                     raise SetupError(f"連接埠 {account.port} 已被使用，LINE 無法驗證該服務。")
+                connection_tested = True
                 print(f"連接埠 {account.port} 的現有 Bot 已通過 LINE 測試，沿用現有程序。")
             else:
                 ensure_target_dependencies(directory)
@@ -2135,20 +2217,32 @@ def start_setup_runtime(
                 if app.poll() is not None:
                     raise SetupError(f"Bot 啟動後立即結束；請查看日誌：{runtime_log_directory(directory) / 'bot.log'}")
                 print(f"Bot 已在本機 {account.port} 埠啟動；接下來會將 LINE Webhook 指向這個服務。")
+            if getattr(args, "public_url", None) is not None:
+                if not connection_tested:
+                    result = line_api_request(
+                        credentials.channel_access_token, "POST", "/channel/webhook/test",
+                        {"endpoint": callback_url},
+                    )
+                    if result.get("success") is not True:
+                        raise SetupError("LINE 無法透過自備網址連到 Bot；請確認 HTTPS 網址與轉送設定。")
+                print("LINE 已透過自備網址成功連到 Bot。")
             return account, ngrok, app, callback_url
         except (SetupError, OSError, TimeoutError, zipfile.BadZipFile, tarfile.TarError) as error:
             stop_process(app)
             stop_process(ngrok)
-            print(f"\nngrok 或 Bot 未完成：{error}")
-            options = ("重試 ngrok 與 Bot", "改用其他本機連接埠", "重新輸入 ngrok Authtoken", "結束設定")
+            print(f"\n公開網址或 Bot 未完成：{error}")
+            options = ("重試公開網址與 Bot", "改用其他本機連接埠", "重新輸入 ngrok Authtoken", "改用自備 HTTPS 網址", "結束設定")
             try:
                 choice = prompt_option("服務接續方式", options)
             except (EOFError, OSError):
                 raise error
-            if choice == options[3]:
-                raise SetupError("已停止於 ngrok／Bot 啟動；本機專案與憑證仍保留。") from error
+            if choice == options[4]:
+                raise SetupError("已停止於公開網址／Bot 啟動；本機專案與憑證仍保留。") from error
             if choice == options[2]:
                 args.ngrok_authtoken = getpass.getpass("新的 ngrok Authtoken（輸入時不顯示）：").strip()
+                args.public_url = None
+            if choice == options[3]:
+                args.public_url = prompt_valid_public_url()
             if choice == options[1]:
                 new_port = prompt_valid_port(0)
                 if new_port == account.port:
@@ -2178,7 +2272,11 @@ def run_setup(args: Any) -> None:
     """Run `zeal line-bot setup`."""
     try:
         confirm_setup_start()
-        prepare_ngrok(args.ngrok_authtoken, args.port)
+        args.public_url = prompt_public_url()
+        if args.public_url is None:
+            prepare_ngrok(args.ngrok_authtoken, args.port)
+        else:
+            print("將使用自備 HTTPS 網址；啟動 Bot 後會請 LINE 測試能否連上。")
         route = prompt_account_route()
         if route == "create":
             setup_step(
@@ -2446,12 +2544,23 @@ def _run_setup_with_account(
             retry_setup_step("顯示加好友 QR Code", lambda: browser.show_add_friend_qr(qr_path), browser)
             while True:
                 input("用手機掃描瀏覽器顯示的 QR Code，傳送訊息並收到 Bot 回覆後，按 Enter 顯示結果：")
+                if getattr(args, "public_url", None) is not None:
+                    try:
+                        result = line_api_request(
+                            credentials.channel_access_token, "POST", "/channel/webhook/test",
+                            {"endpoint": callback_url},
+                        )
+                        connection_ready = result.get("success") is True
+                    except SetupError:
+                        connection_ready = False
+                else:
+                    connection_ready = existing_tunnel_url(account.port) is not None
                 if ((app is None or app.poll() is None)
                     and local_port_listening(account.port)
                     and (ngrok is None or ngrok.poll() is None)
-                    and existing_tunnel_url(account.port) is not None):
+                    and connection_ready):
                     break
-                print("Bot 或 ngrok 已停止；ZEAL 將在本次設定中重新啟動並驗證 Webhook。")
+                print("Bot 或公開連線已停止；ZEAL 將在本次設定中重新啟動並驗證 Webhook。")
                 stop_process(app)
                 stop_process(ngrok)
                 app = ngrok = None
@@ -2473,6 +2582,7 @@ def _run_setup_with_account(
                 messaging,
                 webhook_configured=configured,
                 keep_running=args.keep_running,
+                using_ngrok=getattr(args, "public_url", None) is None,
             ))
             if args.keep_running:
                 cached_ngrok = zeal_bin_directory() / ("ngrok.exe" if os.name == "nt" else "ngrok")
@@ -2486,6 +2596,7 @@ def _run_setup_with_account(
                     runtime_log_directory(destination),
                     port=account.port,
                     ngrok_binary=ngrok_binary,
+                    using_ngrok=getattr(args, "public_url", None) is None,
                 ))
             completed = True
     except (KeyboardInterrupt, EOFError):

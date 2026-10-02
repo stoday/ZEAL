@@ -48,6 +48,8 @@ from zeal.line_bot import (
     option_from_choice,
     prompt_option,
     prompt_account_route,
+    prompt_public_url,
+    validate_public_url,
     account_confirmation_prompt,
     add_friend_url,
     write_add_friend_qr,
@@ -93,10 +95,11 @@ class LineBotProjectTests(unittest.TestCase):
             confirm_setup_start()
 
         self.assertIn("建立或接續 LINE 官方帳號", output.getvalue())
-        self.assertIn("簡易機器人", output.getvalue())
-        self.assertIn("操作瀏覽器", output.getvalue())
-        self.assertIn("登入與人類驗證", output.getvalue())
-        self.assertIn("先檢查 ngrok", output.getvalue())
+        self.assertIn("簡易 LINE Bot", output.getvalue())
+        self.assertIn("開啟瀏覽器協助設定", output.getvalue())
+        self.assertIn("其他人類驗證", output.getvalue())
+        self.assertIn("公開的 HTTPS 網址", output.getvalue())
+        self.assertIn("ngrok 的免費方案", output.getvalue())
         prompt.assert_called_once()
         self.assertIn("按 Enter", prompt.call_args.args[0])
         with patch("builtins.input", return_value="no"), redirect_stdout(StringIO()):
@@ -170,6 +173,85 @@ class LineBotProjectTests(unittest.TestCase):
         preflight.assert_called_once_with(None, 8000)
         route.assert_not_called()
 
+    def test_public_url_choice_skips_ngrok_and_reaches_account_setup(self) -> None:
+        args = build_parser().parse_args(["line-bot", "setup"])
+        account = AccountDetails("咖啡客服", "", 8000)
+        with (
+            patch("builtins.input", side_effect=["", "2", "https://bot.example.com/callback", "1"]),
+            patch("zeal.line_bot.prepare_ngrok") as preflight,
+            patch("zeal.line_bot.prompt_account_details", return_value=account),
+            patch("zeal.line_bot._run_setup_with_account") as complete,
+            redirect_stdout(StringIO()),
+        ):
+            run_setup(args)
+        preflight.assert_not_called()
+        self.assertEqual(args.public_url, "https://bot.example.com")
+        complete.assert_called_once_with(args, account)
+
+    def test_public_url_rejects_local_or_malformed_addresses(self) -> None:
+        for value in ("http://bot.example.com", "https://localhost", "https://127.0.0.1",
+                      "https://bot.example.com?secret=1", "https://name:pass@bot.example.com",
+                      "https://bot.example.com:99999"):
+            with self.subTest(value=value), self.assertRaises(SetupError):
+                validate_public_url(value)
+        self.assertEqual(validate_public_url("https://bot.example.com/callback"), "https://bot.example.com")
+        with patch("builtins.input", side_effect=["2", "http://wrong.example", "https://bot.example.com"]), redirect_stdout(StringIO()):
+            self.assertEqual(prompt_public_url(), "https://bot.example.com")
+
+    def test_public_url_is_tested_by_line_after_bot_starts_without_ngrok(self) -> None:
+        class RunningApp:
+            def poll(self) -> None:
+                return None
+
+        args = build_parser().parse_args(["line-bot", "setup"])
+        args.public_url = "https://bot.example.com"
+        account = AccountDetails("咖啡客服", "", 8000)
+        credentials = Credentials("a" * 32, "T" * 50)
+        with (
+            patch("zeal.line_bot.install_ngrok") as install,
+            patch("zeal.line_bot.existing_tunnel_url") as tunnel,
+            patch("zeal.line_bot.local_port_listening", return_value=False),
+            patch("zeal.line_bot.ensure_target_dependencies"),
+            patch("zeal.line_bot.start_app", return_value=RunningApp()),
+            patch("zeal.line_bot.time.sleep"),
+            patch("zeal.line_bot.line_api_request", return_value={"success": True}) as line_test,
+            redirect_stdout(StringIO()),
+        ):
+            _, ngrok, app, callback = start_setup_runtime(args, account, Path("C:/bot"), credentials)
+        install.assert_not_called()
+        tunnel.assert_not_called()
+        line_test.assert_called_once_with(
+            "T" * 50, "POST", "/channel/webhook/test",
+            {"endpoint": "https://bot.example.com/callback"},
+        )
+        self.assertIsNone(ngrok)
+        self.assertIsNotNone(app)
+        self.assertEqual(callback, "https://bot.example.com/callback")
+
+    def test_public_url_line_test_failure_does_not_continue(self) -> None:
+        class RunningApp:
+            def poll(self) -> None:
+                return None
+
+        args = build_parser().parse_args(["line-bot", "setup"])
+        args.public_url = "https://bot.example.com"
+        with (
+            patch("zeal.line_bot.local_port_listening", return_value=False),
+            patch("zeal.line_bot.ensure_target_dependencies"),
+            patch("zeal.line_bot.start_app", return_value=RunningApp()),
+            patch("zeal.line_bot.time.sleep"),
+            patch("zeal.line_bot.line_api_request", return_value={"success": False}),
+            patch("zeal.line_bot.prompt_option", return_value="結束設定"),
+            patch("zeal.line_bot.stop_process") as stop,
+            redirect_stdout(StringIO()),
+        ):
+            with self.assertRaisesRegex(SetupError, "Bot 啟動"):
+                start_setup_runtime(
+                    args, AccountDetails("咖啡客服", "", 8000), Path("C:/bot"),
+                    Credentials("a" * 32, "T" * 50),
+                )
+        stop.assert_called()
+
     def test_ngrok_preflight_checks_binary_and_configuration(self) -> None:
         binary = Path("/tools/ngrok")
         output = StringIO()
@@ -242,7 +324,7 @@ class LineBotProjectTests(unittest.TestCase):
 
         args = build_parser().parse_args(["line-bot", "setup"])
         with (
-            patch("builtins.input", side_effect=["", "2", "2", ""]) as prompt,
+            patch("builtins.input", side_effect=["", "", "2", "2", ""]) as prompt,
             patch("zeal.line_bot.prepare_ngrok"),
             patch("zeal.line_bot.LineConsoleBrowser", return_value=FakeBrowser()),
             patch("zeal.line_bot.prompt_account_details") as new_account_prompt,
@@ -251,7 +333,7 @@ class LineBotProjectTests(unittest.TestCase):
         ):
             run_setup(args)
         new_account_prompt.assert_not_called()
-        self.assertIn("請輸入編號或完整名稱：", prompt.call_args_list[2].args[0])
+        self.assertIn("請輸入編號或完整名稱：", prompt.call_args_list[3].args[0])
         self.assertEqual(complete.call_args.args[1], AccountDetails("讀書會", "", 8000))
         self.assertEqual(
             complete.call_args.kwargs["manager_url"], "https://manager.line.biz/account/two"
@@ -271,7 +353,7 @@ class LineBotProjectTests(unittest.TestCase):
         args = build_parser().parse_args(["line-bot", "setup"])
         output = StringIO()
         with (
-            patch("builtins.input", side_effect=["", "2", "1", KeyboardInterrupt]),
+            patch("builtins.input", side_effect=["", "", "2", "1", KeyboardInterrupt]),
             patch("zeal.line_bot.prepare_ngrok"),
             patch("zeal.line_bot.LineConsoleBrowser", return_value=FakeBrowser()),
             patch("zeal.line_bot._run_setup_with_account") as complete,
@@ -296,7 +378,7 @@ class LineBotProjectTests(unittest.TestCase):
         account = AccountDetails("新帳號", "", 8000)
         args = build_parser().parse_args(["line-bot", "setup"])
         with (
-            patch("builtins.input", side_effect=["", "2", "3"]),
+            patch("builtins.input", side_effect=["", "", "2", "3"]),
             patch("zeal.line_bot.prepare_ngrok"),
             patch("zeal.line_bot.LineConsoleBrowser", return_value=browser),
             patch("zeal.line_bot.prompt_account_details", return_value=account),
@@ -543,7 +625,7 @@ class LineBotProjectTests(unittest.TestCase):
             output = StringIO()
             with (
                 redirect_stdout(output),
-                patch("builtins.input", side_effect=["", "1", ""]),
+                patch("builtins.input", side_effect=["", "", "1", ""]),
                 patch("zeal.line_bot.prepare_ngrok"),
                 patch("zeal.line_bot.prompt_account_details", return_value=account),
                 patch("zeal.line_bot.prepare_setup_project", return_value=False),
@@ -1100,6 +1182,21 @@ class LineBotProjectTests(unittest.TestCase):
         self.assertIn("使用已執行的連線", instructions)
         self.assertIn("ngrok http 8000", instructions)
         self.assertNotIn("只停止 ngrok", instructions)
+
+    def test_custom_url_summary_and_runtime_do_not_claim_ngrok(self) -> None:
+        summary = format_completion_summary(
+            AccountDetails("咖啡客服", "", 8000), Path("C:/bot"),
+            "https://bot.example.com/callback",
+            MessagingApiSetup(channel_id="2011770531", provider="Studio"),
+            webhook_configured=True, keep_running=True, using_ngrok=False,
+        )
+        instructions = format_runtime_instructions(
+            1234, None, Path("C:/logs"), port=8000, using_ngrok=False,
+        )
+        self.assertIn("Bot：指令結束後持續在背景執行", summary)
+        self.assertNotIn("ngrok", summary)
+        self.assertIn("自備公開網址", instructions)
+        self.assertNotIn("ngrok", instructions)
 
     def test_default_browser_profile_is_in_the_working_tree(self) -> None:
         self.assertEqual(
