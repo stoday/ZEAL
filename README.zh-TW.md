@@ -98,6 +98,24 @@ zeal --version
 
 從原始碼目錄執行這些指令時，請在指令前加上 `uv run`。
 
+## 重設本機工具與登入狀態
+
+執行 `zeal reset` 會清理瀏覽器和 ngrok 的本機資料，也可單獨指定項目。ZEAL 會先列出實際清理路徑，輸入 `RESET` 才會執行；無人值守時可加上 `--yes`。以下指令可在 PowerShell 與 macOS／Linux 終端機執行。
+
+```text
+zeal reset
+zeal reset --all
+zeal reset --browser
+zeal reset --ngrok
+zeal reset --browser --ngrok
+```
+
+- `zeal reset`、`zeal reset --all` 等同 `zeal reset --browser --ngrok`。
+- `--browser` 會移除這套 ZEAL 使用的 Playwright Chromium 元件，以及目前目錄的 LINE 登入資料。若設定時使用自訂瀏覽器資料夾，請加上 `--browser-profile PATH`；舊版 ZEAL 使用的登入資料夾也會一併清理。Playwright 快取可能被其他專案共用，執行前請核對列出的路徑。Linux 安裝的系統相依套件不會移除。
+- `--ngrok` 只會刪除 ZEAL 下載到應用程式資料夾的 ngrok 執行檔，並從使用中的 ngrok 設定檔移除 `authtoken` 欄位，保留其他設定；另行安裝在 `PATH` 的 ngrok 不會被移除。若你另外設定 `NGROK_AUTHTOKEN` 環境變數，仍需自行從終端機或系統設定移除。
+
+執行前請先關閉瀏覽器和 ngrok。產生的 `line-bot-<帳號名稱>/` 專案、其中的 `.env` 與 ZEAL 執行日誌會保留。重設後不會自動執行 setup，也不會變更 LINE 官方帳號或 Messaging API Channel。從原始碼目錄執行時，請在指令前加上 `uv run`。
+
 設定完成後，到 [LINE Official Account Manager](https://manager.line.biz/)
 修改官方帳號資料與自動回覆；到
 [LINE Developers Console](https://developers.line.biz/console/) 修改 Webhook

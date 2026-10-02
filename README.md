@@ -101,6 +101,24 @@ zeal --version
 
 When working from the source checkout, prefix these commands with `uv run`.
 
+## Reset local tools and sign-in state
+
+Run `zeal reset` to clear both browser and ngrok state, or select one component. ZEAL lists the exact targets and asks you to type `RESET` before clearing them; add `--yes` for a non-interactive run. These commands work in PowerShell and macOS/Linux terminals.
+
+```text
+zeal reset
+zeal reset --all
+zeal reset --browser
+zeal reset --ngrok
+zeal reset --browser --ngrok
+```
+
+- `zeal reset` and `zeal reset --all` are equivalent to `zeal reset --browser --ngrok`.
+- `--browser` removes the Playwright Chromium components used by this ZEAL installation and the LINE sign-in profile in the current directory. If setup used a custom profile, also pass `--browser-profile PATH`. It also removes the profile used by older ZEAL versions. Playwright's browser cache may be shared with other projects, so review the listed paths. Linux system packages installed as browser dependencies remain installed.
+- `--ngrok` removes only the ngrok executable downloaded into ZEAL's application data and deletes the `authtoken` entry from the active ngrok configuration while preserving its other settings. An ngrok executable installed separately on `PATH` remains installed. If you set `NGROK_AUTHTOKEN` as an environment variable, remove it from your shell or system settings separately.
+
+Close the browser and ngrok before resetting. Generated `line-bot-<account-name>/` projects, their `.env` files, and ZEAL runtime logs are preserved. Reset does not start setup or change your LINE Official Account or Messaging API channel. From a source checkout, prefix each command with `uv run`.
+
 After setup, use [LINE Official Account Manager](https://manager.line.biz/) to
 edit account details and automatic replies. Use the
 [LINE Developers Console](https://developers.line.biz/console/) to edit the

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from zeal.line_bot import run_resume, run_setup
+from zeal.reset import run_reset
 
 
 def _setup_port(value: str) -> int:
@@ -126,6 +127,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not open a browser; print the Webhook URL for manual setup.",
     )
     resume.set_defaults(handler=run_resume)
+
+    reset = commands.add_parser(
+        "reset",
+        help="Clear ZEAL's local browser and ngrok state while keeping Bot projects.",
+    )
+    reset.add_argument(
+        "--all", action="store_true",
+        help="Clear both browser and ngrok state (the default).",
+    )
+    reset.add_argument(
+        "--browser", action="store_true",
+        help="Remove Playwright Chromium components and ZEAL's LINE browser profile.",
+    )
+    reset.add_argument(
+        "--ngrok", action="store_true",
+        help="Remove ZEAL's ngrok binary and the authtoken from ngrok's configuration.",
+    )
+    reset.add_argument(
+        "--browser-profile", type=Path,
+        help="Also remove a custom setup profile (requires browser reset).",
+    )
+    reset.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation prompt after reviewing the targets.",
+    )
+    reset.set_defaults(handler=run_reset)
     return parser
 
 
