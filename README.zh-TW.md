@@ -43,24 +43,41 @@ zeal line-bot setup
 uv run zeal line-bot setup
 ```
 
-缺少 Playwright Chromium 時，ZEAL 會先告知並下載；在 Linux 上也會安裝所需的系統套件，可能需要管理員權限。
+設定流程如下：
 
-ZEAL 會先說明流程。按 Enter 後，選擇使用自備公開 HTTPS 網址或由 ngrok 建立測試用網址。自備網址須轉送到本機 Bot 的連接埠；可輸入基底網址或以 `/callback` 結尾的完整網址，ZEAL 會在 Bot 啟動後請 LINE 測試是否可連線。選擇 ngrok 時，ZEAL 會檢查程式並在缺少時下載；若已有對應連接埠的通道便沿用。缺少 Authtoken 時，ZEAL 會引導註冊並透過隱藏輸入儲存。接著選擇「建立新的官方帳號」或「接續既有官方帳號」。新建時，依終端機指示輸入帳號資料與業種，ZEAL 會在可見瀏覽器填寫表單。接續時，登入 LINE 後從目前可管理的官方帳號清單選擇並確認，不需重填申請資料。
-只有首次啟用 Messaging API 時才會選擇 Provider；若選定帳號已有 Channel，ZEAL 會說明 Provider 已綁定，直接沿用既有 Channel。
-畫面顯示灰色遮罩時，ZEAL 正在操作，網頁暫不接受手動輸入；顯示綠色提示時才由你操作。
-LINE 要求登入、OTP／MFA 或人類驗證時，請在同一個瀏覽器完成；ZEAL 接手後會重新鎖定網頁。
-新建帳號時，LINE 表單的「建立／確定」和確認頁的「完成」都由 ZEAL 自動按下。
-若 LINE 顯示「同意我們使用您的資訊」，ZEAL 也會按下該頁的「同意」。
-其餘支援的設定會由 ZEAL 自動完成。
-重新執行同一指令時，ZEAL 會沿用未修改的本機專案。若專案內容或 `.env` 與所選 Channel 不符，ZEAL 會列出現有路徑及可用的編號新專案名稱，讓你當場選擇覆寫、另建建議名稱的新專案，或自行命名；選完就接續設定，不必重做前面的步驟。覆寫前會先將原專案或憑證移到帶編號的備份名稱。
-完成後指令會結束，Bot 留在背景；若選擇 ngrok，它也會繼續執行。摘要會顯示程序 PID、日誌位置，以及目前作業系統的查看和停止指令。使用自備網址時，請自行保持該網址轉送至 Bot。
+- **安裝瀏覽器**
+  - ZEAL 使用可見的 Playwright Chromium 操作 LINE 後台。若電腦尚未安裝，ZEAL 會先告知並下載；已有安裝時直接使用。
+  - 在 Linux 上，首次安裝也會安裝所需的系統套件，可能需要管理員權限。瀏覽器登入狀態預設保存在執行指令目錄的 `.zeal-line-browser-profile/`，方便下次接續。
+- **設定公開網址**
+  - 看完終端機的流程說明並按 Enter，選擇「使用 ngrok」或「使用已有的公開 HTTPS 網址」。LINE 需要這個網址，才能把訊息送到本機 Bot；Bot 預設使用 `8000` 埠。
+  - 自備網址須已轉送到 Bot 連接埠。可輸入基底網址，例如 `https://bot.example.com`，或完整的 `https://bot.example.com/callback`；ZEAL 會補上 `/callback`，並在 Bot 啟動後請 LINE 測試連線。
+  - 選擇 ngrok 時，ZEAL 會檢查或下載程式，並沿用同一個 Bot 埠的既有通道。若尚無 Authtoken，終端機會引導你註冊並以隱藏輸入儲存；免費方案的公開網址可能在重新啟動後改變。
+- **設定官方帳號**
+  - 選擇「建立新的官方帳號」時，在終端機輸入帳號名稱、公司／店鋪名稱、電子郵件和業種；ZEAL 會將資料填入 LINE 的可見瀏覽器。
+  - 選擇「接續既有官方帳號」時，登入後從 ZEAL 即時讀取的可管理帳號清單選擇，並按 Enter 確認，不必重填申請資料。
+- **準備本機專案**
+  - ZEAL 會以帳號名稱建立 `line-bot-<帳號名稱>/`。重新執行時，未修改的專案可直接沿用。
+  - 若既有檔案或 `.env` 與所選 Channel 衝突，可選擇覆寫、使用建議的編號新專案名稱，或自行命名；ZEAL 會先備份被覆寫的資料，再接續設定。
+- **在瀏覽器完成登入與驗證**
+  - 灰色遮罩表示 ZEAL 正在操作，網頁暫不接受手動輸入；綠色提示表示輪到你操作。LINE 要求登入、OTP／MFA 或人類驗證時，請在同一個瀏覽器親自完成。
+  - 完成後 ZEAL 會接手並重新鎖定網頁。新建帳號時，ZEAL 會按下申請表的「建立／確定」、確認頁的「完成」，以及資訊使用同意頁的「同意」（若出現）。
+- **啟用 Messaging API 並選擇 Provider**
+  - 首次啟用時，ZEAL 會在 LINE Official Account Manager 引導你從即時清單選擇或建立 Provider，再接續 LINE Developers Console 的 Channel 設定。Provider 代表這項服務與 Channel 的經營者，連結後無法改掛到其他 Provider，請確認選擇。
+  - 若帳號已有 Messaging API Channel，ZEAL 會沿用已綁定的 Provider 與 Channel，不需重新選擇。
+- **保存 Channel 憑證**
+  - ZEAL 會取得 Bot 所需的 Channel secret 和 access token，寫入本機專案的 `.env`，不在終端機顯示密鑰。若已有 `.env`，會先核對它是否屬於所選 Channel；請勿公開憑證檔。
+- **啟動 Bot 並設定 Webhook**
+  - ZEAL 會啟動本機 Bot 與所選的公開連線，將 `/callback` 網址設定到 LINE，測試 LINE 能否送達，並確認 Use webhook 已啟用。
+  - ZEAL 也會嘗試關閉 LINE 預設自動回覆，避免同一則訊息收到兩次回覆；若未能完成，終端機會提示你到 LINE Manager 手動關閉。加好友歡迎訊息仍可自行設定。
+- **測試回覆與管理程序**
+  - 用手機掃描瀏覽器顯示的加好友 QR Code，或使用終端機列出的連結，傳送訊息並確認 Bot 回覆；收到回覆後按 Enter 查看設定摘要。
+  - 指令結束後，Bot 預設留在背景執行；若使用 ngrok，它也會繼續執行。摘要列出 PID、日誌位置及目前作業系統的查看與停止指令。若用自備網址，請維持轉送；要修改回覆內容，可編輯專案中的 `app.py`。
 
-若使用 ngrok，要確認通道是否仍在執行，可開啟本機狀態頁 <http://127.0.0.1:4040>；PowerShell 也可執行 `(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded`。若要只停止 ngrok，使用摘要中的 `Stop-Process -Id <ngrok PID>`；重新啟動時，在另一個終端執行摘要列出的完整 ngrok 指令（若已加入 `PATH`，可用 `ngrok http 8000`，將 8000 換成 Bot 的埠）。公開網址若改變，須在 LINE Developers Console 更新 Webhook URL（加上 `/callback`），再按 Verify 並確認 Use webhook 已開啟。
+日後使用 ngrok 時：
 
-ZEAL 會透過 LINE 公開的 Messaging API 設定並驗證 Webhook，確認 Use webhook 已啟用。最後會在瀏覽器開啟產生的加好友 QR Code，並在終端機列出加好友連結；掃描後傳訊息給 Bot，確認收到回覆。設定 Webhook 後，ZEAL 會關閉
-LINE 的預設自動回覆，避免同一則訊息收到兩次回覆；加好友歡迎訊息仍可自行設定。
-ZEAL 會建立 `line-bot-<帳號名稱>/`；若要修改 Bot 回覆內容，編輯其中的 `app.py` 即可。
-請保持 `.env` 私密。
+- **確認通道：** 各作業系統都可開啟 <http://127.0.0.1:4040>。PowerShell 可用 `(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded` 檢查連接埠；macOS／Linux 可用 `curl -fsS http://127.0.0.1:4040/api/tunnels` 列出目前的通道。
+- **只停止 ngrok：** 使用設定摘要列出的 ngrok PID；PowerShell 執行 `Stop-Process -Id <ngrok PID>`，macOS／Linux 終端機執行 `kill <ngrok PID>`。
+- **重新啟動 ngrok：** 在另一個終端機執行摘要列出的完整指令。若 ngrok 已加入 `PATH`，各作業系統都可用 `ngrok http 8000`，並將 `8000` 換成 Bot 連接埠。若公開網址改變，請在 LINE Developers Console 更新 Webhook URL（加上 `/callback`）、按 Verify，並確認 Use webhook 已啟用。
 
 ## 其他指令說明
 

@@ -46,54 +46,41 @@ From the source checkout, use:
 uv run zeal line-bot setup
 ```
 
-When Playwright Chromium is missing, ZEAL announces and downloads it. On Linux,
-it also installs required system packages, which may require administrator privileges.
+Setup proceeds as follows:
 
-ZEAL explains the steps first. After you press Enter, choose an existing public
-HTTPS URL or let ngrok create a test URL. Your own URL must forward to the local
-Bot port; enter its base URL or the full URL ending in `/callback`. After starting
-the Bot, ZEAL asks LINE to test that URL. If you choose ngrok, ZEAL checks and
-downloads it if needed, reuses a tunnel for the Bot port when available, and
-guides you to register and enter an Authtoken if needed. ZEAL then asks
-whether to create a new Official Account
-or continue with an existing one. For a new account, enter its details and choose
-an industry in the terminal; ZEAL fills the form in the visible LINE browser.
-For an existing account, sign in and select one from the live list of accounts you
-can manage, then confirm the choice. ZEAL asks you to choose a Provider only
-when enabling Messaging API for the first time. If the account already has a
-channel, ZEAL explains that its Provider is already linked and continues with it.
-A gray veil means ZEAL is working and the page is locked against manual input;
-a green notice means you can use the page. Complete sign-in,
-OTP/MFA, and human verification in that browser when LINE asks. ZEAL locks
-the page again when it resumes. For a new account, it clicks both the
-initial Create button and the final Finish button automatically. If LINE shows
-the "Agree to our use of your information" page, ZEAL clicks Agree. If
-you rerun setup, ZEAL reuses an unchanged local project. If project files or
-`.env` conflict with the selected channel, ZEAL shows the existing path and an
-available numbered project name. Choose to overwrite, use the suggested new
-project name, or enter your own; setup then continues without repeating earlier steps.
-Overwritten project files or credentials are moved to a numbered backup first.
-When setup finishes, the Bot keeps running; ngrok also stays running if selected.
-The summary shows PIDs, log paths, and commands to inspect or stop them. If you
-use your own URL, keep its forwarding to the Bot active yourself.
+- **Install the browser**
+  - ZEAL uses a visible Playwright Chromium browser for LINE setup. If it is missing, ZEAL announces and downloads it; otherwise it uses the installed copy.
+  - On Linux, the first installation also installs required system packages and may need administrator privileges. By default, sign-in state is saved in `.zeal-line-browser-profile/` beside the directory where you run the command, so later runs can continue the session.
+- **Set the public URL**
+  - Read the terminal introduction, press Enter, and choose ngrok or an existing public HTTPS URL. LINE needs this URL to send messages to the local Bot, which uses port `8000` by default.
+  - Your own URL must already forward to the Bot port. Enter a base URL such as `https://bot.example.com` or the full `https://bot.example.com/callback`; ZEAL uses `/callback` and asks LINE to test the connection after starting the Bot.
+  - With ngrok, ZEAL checks or downloads the program and reuses an existing tunnel for the same Bot port. If you have no Authtoken, the terminal guides you through registration and saves it through hidden input. A free-plan URL may change after a restart.
+- **Set up the Official Account**
+  - To create one, enter its name, company or store name, email, and industry in the terminal. ZEAL fills the form in the visible LINE browser.
+  - To continue an existing account, sign in, select it from the live list of accounts you can manage, and press Enter to confirm. You do not need to enter the application details again.
+- **Prepare the local project**
+  - ZEAL creates `line-bot-<account-name>/` using the account name. An unchanged project can be reused on later runs.
+  - If existing files or `.env` conflict with the selected channel, choose to overwrite, use a suggested numbered project name, or enter your own. ZEAL backs up the replaced data before continuing.
+- **Complete sign-in and verification in the browser**
+  - A gray veil means ZEAL is operating and manual input is locked; a green notice means you can use the page. Complete LINE sign-in, OTP/MFA, and human verification yourself in that browser when prompted.
+  - ZEAL then resumes and locks the page again. For a new account, it clicks Create, Finish, and Agree on the information-use consent page if shown.
+- **Enable Messaging API and choose a Provider**
+  - On first activation, ZEAL guides you through choosing or creating a Provider from LINE's live list in Official Account Manager, then continues the channel setup in Developers Console. The Provider owns the service and Channel; the link cannot be moved to another Provider, so confirm your choice.
+  - If the account already has a Messaging API channel, ZEAL keeps its linked Provider and channel. There is no new Provider choice.
+- **Save the Channel credentials**
+  - ZEAL retrieves the Channel secret and access token the Bot needs and saves them in the local project's `.env` without printing the secrets. If `.env` already exists, ZEAL first checks that it belongs to the selected channel. Keep this file private.
+- **Start the Bot and configure the Webhook**
+  - ZEAL starts the local Bot and the selected public connection, sets the `/callback` URL in LINE, tests that LINE can reach it, and confirms Use webhook is enabled.
+  - It also tries to turn off LINE's default auto-response to avoid duplicate replies. If that step does not succeed, the terminal tells you how to turn it off in LINE Manager. Greeting messages remain configurable.
+- **Test the reply and manage the processes**
+  - Scan the add-friend QR code shown in the browser, or use the link printed in the terminal. Send a message, confirm the Bot replies, then press Enter to see the setup summary.
+  - The Bot remains running in the background by default, along with ngrok if selected. The summary lists PIDs, log paths, and commands for your operating system to inspect or stop them. Keep forwarding active if you use your own URL; edit `app.py` in the generated project to change the reply.
 
-If you use ngrok, open <http://127.0.0.1:4040> to check its local tunnel. In PowerShell,
-`(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded` checks whether
-the inspector port is listening. To stop only ngrok, use the summary's
-`Stop-Process -Id <ngrok PID>`. To restart it, run the full ngrok command shown
-in the summary in a new terminal (`ngrok http 8000` if ngrok is on `PATH`;
-replace 8000 with the Bot port). If the public URL changes, update the LINE
-Developers Console Webhook URL with `/callback`, click Verify, and confirm
-Use webhook is enabled.
+If you use ngrok later:
 
-ZEAL sets and tests the Webhook URL through LINE's documented Messaging API,
-then confirms that Use webhook is enabled. At the end, it opens a generated
-add-friend QR code in the visible browser and prints the add-friend link. Scan
-the code, send the Bot a message, and confirm the reply.
-ZEAL disables LINE's default auto-response when it enables the Webhook, so
-incoming messages receive one Bot reply. Greeting messages remain configurable.
-ZEAL creates `line-bot-<account-name>/`; edit `app.py` there to change the
-Bot's reply. Keep `.env` private.
+- **Check the tunnel:** Open <http://127.0.0.1:4040> on any OS. PowerShell can check whether the inspector port is listening with `(Test-NetConnection 127.0.0.1 -Port 4040).TcpTestSucceeded`; macOS/Linux can list the active tunnels with `curl -fsS http://127.0.0.1:4040/api/tunnels`.
+- **Stop only ngrok:** Use the ngrok PID from the setup summary: `Stop-Process -Id <ngrok PID>` in PowerShell, or `kill <ngrok PID>` in a macOS/Linux terminal.
+- **Restart ngrok:** In a new terminal, run the full ngrok command shown in the summary. If ngrok is on `PATH`, use `ngrok http 8000` on any OS, replacing `8000` with the Bot port. If the public URL changes, update the LINE Developers Console Webhook URL with `/callback`, click Verify, and confirm Use webhook is enabled.
 
 ## Other commands
 
