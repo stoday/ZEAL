@@ -45,7 +45,13 @@ cannot provide this local browser and password-form handoff to the user.
 6. For `awaiting_secret`, show the `prompt.human_url` link and ask the user to
    enter the value directly in that local password form. Never ask for tokens or
    Channel secrets in chat or submit them through an agent tool. The worker will
-   resume after the local form is submitted; read status again.
+   resume after the local form is submitted; read status again. Do not expect to
+   receive the secret itself. Poll `status --wait 5` while the worker is running.
+   If a prompt remains, compare its ID with the previous prompt before asking for
+   another input. Repeat a secret request only when fresh status shows a pending
+   secret prompt; explain any sanitized validation error. A page showing `{}` or
+   a source-validation failure means submission failed, not that the agent should
+   retrieve the token.
 7. On completion, report the generated or connected project, verified Webhook, user-confirmed
    reply, and whether services remain running. `running`, a created project, or
    a successful click is not completion. Default services stay in the background.
