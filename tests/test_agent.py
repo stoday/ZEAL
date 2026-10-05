@@ -312,7 +312,13 @@ def test_loopback_auth_origin_and_secret_form(session, local_server):
             assert 'type="password"' in page
             assert "Token &lt;private&gt;" in page
             assert response.headers["Cache-Control"] == "no-store"
+            assert response.headers["Referrer-Policy"] == "same-origin"
         body = urllib.parse.urlencode({"prompt_id": prompt["id"], "value": "local-secret"}).encode()
+        for origin in ("null", "https://foreign.example"):
+            with pytest.raises(urllib.error.HTTPError) as denied:
+                http(prompt["human_url"], body, {"Origin": origin})
+            assert denied.value.code == 403
+            assert session.snapshot()["state"] == "awaiting_secret"
         with http(prompt["human_url"], body, {"Origin": base}) as response:
             assert response.status == 200
         thread.join(2)
@@ -321,6 +327,34 @@ def test_loopback_auth_origin_and_secret_form(session, local_server):
             assert b"local-secret" not in response.read()
         with pytest.raises(urllib.error.HTTPError):
             http(prompt["human_url"], body, {"Origin": base})
+    finally:
+        session.cancel()
+        thread.join(2)
+
+
+def test_browser_secret_form_submission_resumes_worker(session, local_server):
+    from playwright.sync_api import sync_playwright
+
+    thread, values = run_thread(lambda: session.ask("ngrok Authtoken", secret=True))
+    try:
+        prompt = wait_prompt(session)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.goto(prompt["human_url"])
+                page.locator('input[name="value"]').fill("synthetic-ngrok-token")
+                with page.expect_navigation() as navigation:
+                    page.get_by_role("button", name="繼續").click()
+                assert navigation.value.status == 200
+                assert navigation.value.request.all_headers()["origin"] == local_server[0]
+                assert "已接續" in page.locator("body").inner_text()
+            finally:
+                browser.close()
+        thread.join(2)
+        assert values == ["synthetic-ngrok-token"]
+        assert session.snapshot()["state"] == "running"
+        assert "synthetic-ngrok-token" not in (session.directory / "status.json").read_text(encoding="utf-8")
     finally:
         session.cancel()
         thread.join(2)

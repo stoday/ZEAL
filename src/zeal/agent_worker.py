@@ -188,7 +188,10 @@ def make_handler(session: Session, token: str) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", content_type + "; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Referrer-Policy", "no-referrer")
+            # Chromium sends Origin: null for a navigation POST when the form
+            # document uses no-referrer. Keep same-origin POSTs identifiable,
+            # while still withholding this private URL from other origins.
+            self.send_header("Referrer-Policy", "same-origin")
             self.send_header("Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
             self.end_headers()
             self.wfile.write(encoded)
@@ -229,14 +232,19 @@ def make_handler(session: Session, token: str) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             human = self.path == f"/human/{session.human_token}"
-            if not self.safe_origin() or not (human or self.authorized()):
-                self.send(403, '{}')
-                return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 <= size <= 65536:
                     raise ValueError()
                 body = self.rfile.read(size).decode("utf-8")
+                # Drain the bounded body before rejecting a POST so Windows
+                # clients receive the error response instead of a reset socket.
+                if not self.safe_origin() or not (human or self.authorized()):
+                    if human:
+                        self.send(403, "未接收輸入：此表單的來源驗證失敗。請回到 agent 取得目前的本機輸入連結，再重新開啟。", "text/plain")
+                    else:
+                        self.send(403, '{}')
+                    return
                 if human:
                     values = urllib.parse.parse_qs(body, keep_blank_values=True)
                     session.answer(values.get("prompt_id", [None])[0], values.get("value", [""])[0], local_human=True)

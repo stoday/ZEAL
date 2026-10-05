@@ -78,8 +78,13 @@ resources. Local fixture validation is separate from live LINE/agent E2E.
 
 ## Validation: 2026-10-05
 
-- `uv run pytest --basetemp .tmp/pytest-existing-all -q -p no:cacheprovider`:
-  149 passed, 1 skipped, 17 subtests passed.
+- `uv run pytest --basetemp .tmp/pytest-form-final -q -p no:cacheprovider`:
+  150 passed, 1 skipped, 17 subtests passed.
+- A real Chromium form submission reproduced HTTP 403 with the former
+  `Referrer-Policy: no-referrer` (navigation POST used `Origin: null`). With
+  `same-origin`, the local password form resumes the worker and does not persist
+  the synthetic token. Foreign and null origins remain rejected. CI installs
+  Chromium to exercise this browser regression.
 - Existing-application fixtures cover preserving JavaScript source and `.env`,
   separate credentials, custom Webhook paths, deployed endpoints, readiness tasks,
   and stopping only ZEAL-owned tunnels. No framework-specific integration or real

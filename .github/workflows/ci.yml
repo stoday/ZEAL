@@ -31,5 +31,8 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked
 
+      - name: Install browser for local form regression test
+        run: uv run playwright install --with-deps chromium
+
       - name: Run tests
         run: uv run pytest
