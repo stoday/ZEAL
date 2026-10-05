@@ -9,6 +9,8 @@ from typing import Sequence
 
 from zeal.line_bot import run_resume, run_setup
 from zeal.reset import run_reset
+from zeal.agent import add_agent_parser
+from zeal.skill_install import add_skill_parser
 
 
 def _setup_port(value: str) -> int:
@@ -30,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {package_version('zeal-builder')}",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    add_agent_parser(commands)
+    add_skill_parser(commands)
 
     line_bot = commands.add_parser(
         "line-bot",
@@ -38,12 +42,17 @@ def build_parser() -> argparse.ArgumentParser:
     line_bot_commands = line_bot.add_subparsers(dest="line_bot_command", required=True)
     setup = line_bot_commands.add_parser(
         "setup",
-        help="Create or continue an Official Account, then configure a local Bot and Webhook.",
+        help="Create or continue an Official Account and get a reply from a local Bot.",
     )
-    setup.add_argument(
+    project_target = setup.add_mutually_exclusive_group()
+    project_target.add_argument(
         "--output",
         type=Path,
         help="Directory in which to create line-bot-<account-name> (default: current directory).",
+    )
+    project_target.add_argument(
+        "--existing-project", type=Path,
+        help="Use an existing application without creating a Python Bot environment.",
     )
     setup.add_argument(
         "--port",
@@ -70,19 +79,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-running",
         dest="keep_running",
         action="store_true",
-        help="Keep ngrok and the Bot running after setup (default).",
+        help="Keep services started by ZEAL running after setup (default).",
     )
     runtime.add_argument(
         "--stop-after-setup",
         dest="keep_running",
         action="store_false",
-        help="Stop ngrok and the Bot when setup finishes.",
+        help="Stop services started by ZEAL when setup finishes; preserve existing app processes.",
     )
     setup.set_defaults(handler=run_setup, keep_running=True)
 
     resume = line_bot_commands.add_parser(
         "resume",
-        help="Finish local setup for an existing LINE Messaging API channel.",
+        help="Advanced: use credentials you already have for a Messaging API channel.",
     )
     resume.add_argument(
         "--name",
