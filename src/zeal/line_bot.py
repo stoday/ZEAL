@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any
 
 from zeal.browser_gate import BrowserGate
+from zeal.interaction import input, print, secret_input, choice, notify
+import zeal.existing_project as existing_project
 
 
 LINE_MANAGER_URL = "https://manager.line.biz/"
@@ -275,6 +277,9 @@ def prompt_option(
     label: str, options: tuple[str, ...] | list[str], *, two_columns: bool = False,
     input_label: str | None = None,
 ) -> str:
+    answer = choice(label, options)
+    if answer is not None:
+        return option_from_choice(answer, options)
     print(f"\n{label}：")
     rows = (
         _option_rows(options, shutil.get_terminal_size(fallback=(100, 24)).columns)
@@ -308,8 +313,8 @@ def prompt_provider_choice(options: tuple[str, ...]) -> tuple[str | None, str | 
 
 def prompt_account_route() -> str:
     """Choose whether setup creates an Official Account or uses an existing one."""
-    print("\n先決定要建立新帳號，或接續你已能管理的官方帳號；ZEAL 會依選擇安排後續步驟。")
-    choice = prompt_option("LINE 官方帳號設定方式", ("建立新的官方帳號", "接續既有官方帳號"))
+    print("\n你想讓哪個 LINE 官方帳號回覆訊息？")
+    choice = prompt_option("選擇官方帳號", ("建立新的官方帳號", "接續既有官方帳號"))
     return "create" if choice == "建立新的官方帳號" else "existing"
 
 
@@ -333,6 +338,9 @@ class AccountDetails:
 class Credentials:
     channel_secret: str
     channel_access_token: str
+
+    def __post_init__(self) -> None:
+        notify("secrets", values=[self.channel_secret, self.channel_access_token])
 
 
 @dataclass(frozen=True)
@@ -413,13 +421,16 @@ def retry_setup_step(
     """Retry a failed step without discarding the current browser or earlier work."""
     while True:
         try:
-            return operation()
+            result = operation()
+            notify("operation_completed", step=label)
+            return result
         except Exception as error:
             recoverable = isinstance(error, (SetupError, OSError, TimeoutError))
             browser_error = type(error).__module__.startswith("playwright.")
             if not recoverable and not browser_error:
                 raise
             detail = str(error) if recoverable else type(error).__name__
+            notify("retry", step=label, code=type(error).__name__)
             print(f"\n{label}未完成：{detail}")
             options = ["重新嘗試此步驟"]
             pages = getattr(browser, "pages", []) if browser is not None else []
@@ -457,17 +468,18 @@ def require_webhook_enabled(value: bool) -> bool:
 def confirm_setup_start() -> None:
     """Explain the guided setup before collecting data or changing anything."""
     print(f"\n{_accent('◆ ZEAL 將協助您建立或接續 LINE 官方帳號設定步驟，並自動建置一個能回覆訊息的簡易 LINE Bot。', '36;1')}")
-    print("ZEAL 會開啟瀏覽器協助設定；若電腦缺少所需的瀏覽器，會協助下載。新建帳號時會依您提供的資料填寫申請表。登入、驗證碼及其他人類驗證仍需由您親自完成。")
-    print("由於 LINE 需要一個公開的 HTTPS 網址，才能把訊息送到您電腦上的 Bot。請準備好可以轉送至這台電腦的網址；若沒有，ZEAL 將引導您使用 ngrok 的免費方案建立測試用網址。")
-    print("選擇 ngrok 時，ZEAL 會檢查並在需要時下載程式，再引導您註冊、取得 Authtoken。免費方案有使用限制，網址可能在重新啟動後改變。")
+    print("完成的標準是：用手機傳一則訊息給官方帳號，收到 Bot 回覆。")
+    print("若已有自己的專案，可選擇沿用，不需要由 ZEAL 建置 Python Bot 環境。")
+    print("ZEAL 會開啟瀏覽器協助設定；若缺少所需的瀏覽器，會協助下載。登入、驗證碼及其他人類驗證仍需由您親自完成。")
+    print("等帳號準備好後，ZEAL 才會檢查公開連線。您可以使用已有的 HTTPS 網址；若沒有，ZEAL 會引導您建立測試用網址。")
     print()
     if input("若同意開始，請按 Enter；按 Ctrl+C 取消：").strip():
         raise SetupError("尚未開始設定；同意時請直接按 Enter。")
 
 
-def validate_public_url(value: str) -> str:
+def validate_public_url(value: str, *, complete_callback: bool = False) -> str:
     """Accept a public HTTPS base URL, or a complete /callback URL."""
-    value = value.strip().rstrip("/")
+    value = value.strip() if complete_callback else value.strip().rstrip("/")
     try:
         parsed = urllib.parse.urlsplit(value)
         host = parsed.hostname
@@ -490,22 +502,22 @@ def validate_public_url(value: str) -> str:
             raise SetupError("請輸入可從網際網路連線的公開 HTTPS 網址。")
     if port is not None and not 1 <= port <= 65535:
         raise SetupError("HTTPS 網址的連接埠無效。")
-    base = value[:-len("/callback")] if parsed.path.endswith("/callback") else value
-    if len(f"{base}/callback") > 500:
+    base = value if complete_callback else value[:-len("/callback")] if parsed.path.endswith("/callback") else value
+    if len(base if complete_callback else f"{base}/callback") > 500:
         raise SetupError("Webhook 網址不可超過 500 字元。")
     return base
 
 
 def prompt_public_url() -> str | None:
-    """Choose the connection before ngrok can be downloaded or configured."""
+    """Choose a public connection when the Bot is ready to start."""
     print("\nLINE 要透過哪個網址連到這台電腦的 Bot？")
-    print("  1. 使用 ngrok 建立測試用公開網址（可使用免費方案）")
-    print("  2. 使用已有的公開 HTTPS 網址（須已轉送到這台電腦的 Bot 連接埠）")
+    print("  1. 使用已有的公開 HTTPS 網址（須已轉送到這台電腦的 Bot 連接埠）")
+    print("  2. 由 ZEAL 建立測試用公開網址（使用 ngrok，可使用免費方案）")
     while True:
-        choice = input("請輸入 1 或 2（按 Enter 選 1）：").strip()
-        if choice in ("", "1"):
+        choice = input("請輸入 1 或 2（按 Enter 選 2）：").strip()
+        if choice in ("", "2"):
             return None
-        if choice == "2":
+        if choice == "1":
             return prompt_valid_public_url()
         print("請輸入 1 或 2。")
 
@@ -520,6 +532,7 @@ def prompt_valid_public_url() -> str:
 
 
 def setup_step(number: int, description: str, explanation: str | None = None) -> None:
+    notify("step", number=number, description=description)
     print(f"\n{_accent(f'[步驟 {number}/8] {description}', '36;1')}")
     if explanation:
         print(explanation)
@@ -964,8 +977,8 @@ def prompt_existing_credentials() -> Credentials:
     """Read credentials from the controlling terminal without echoing them."""
     print("請從 LINE Developers Console 的 Channel 複製憑證：Basic settings 中的 Channel secret，")
     print("以及 Messaging API 中的 Channel access token；ZEAL 會將它們存入本機 .env。")
-    secret = getpass.getpass("Channel secret（輸入不會顯示）：").strip()
-    token = getpass.getpass("Channel access token（輸入不會顯示）：").strip()
+    secret = secret_input("Channel secret（輸入不會顯示）：").strip()
+    token = secret_input("Channel access token（輸入不會顯示）：").strip()
     if not re.fullmatch(r"[0-9a-fA-F]{32}", secret):
         raise SetupError("Channel secret 格式不正確；請從 Basic settings 複製完整值。")
     if len(token) < 40:
@@ -1086,9 +1099,12 @@ def install_ngrok() -> Path:
     return binary
 
 
-def prepare_ngrok(argument_token: str | None, port: int) -> Path:
-    """Check the local ngrok binary and configuration before any LINE setup."""
-    print("\n[啟動前檢查] 確認 ngrok 可用；LINE 稍後需要它連到本機 Bot。")
+def prepare_ngrok(argument_token: str | None, port: int) -> Path | None:
+    """Prepare ngrok only when the Bot needs a public connection."""
+    print("\n正在準備測試用公開網址，讓 LINE 能連到本機 Bot。")
+    if existing_tunnel_url(port):
+        print(f"本機 {port} 埠已有 ngrok HTTPS 通道；稍後會沿用，無須重新設定 Authtoken。")
+        return None
     try:
         binary = install_ngrok()
         version = subprocess.run(
@@ -1105,12 +1121,8 @@ def prepare_ngrok(argument_token: str | None, port: int) -> Path:
             f"ngrok 無法執行：{binary}。請從 https://ngrok.com/download 重新安裝後再執行 setup。"
         )
     print(f"ngrok 執行檔已確認：{binary}")
-    if existing_tunnel_url(port):
-        print(f"本機 {port} 埠已有 ngrok HTTPS 通道；稍後會沿用。")
-    else:
-        ensure_ngrok_config(binary, argument_token)
-        print("ngrok 設定已確認；稍後會建立 HTTPS 通道。")
-    print("現在開始 LINE 官方帳號設定。")
+    ensure_ngrok_config(binary, argument_token)
+    print("ngrok 設定已確認；稍後會建立 HTTPS 通道。")
     return binary
 
 
@@ -1120,7 +1132,7 @@ def ngrok_authtoken(argument_value: str | None) -> str:
         print(f"1. 尚無 ngrok 帳號：開啟 {_terminal_link(NGROK_SIGNUP_URL)}，註冊並登入；已有帳號則直接登入。")
         print(f"2. 登入後開啟 {_terminal_link(NGROK_AUTHTOKEN_URL)}，複製頁面上的 Authtoken。")
         print("3. 回到此終端機貼上 Authtoken 並按 Enter；輸入不會顯示，ZEAL 會替你儲存到 ngrok 設定。")
-    return argument_value or os.environ.get("NGROK_AUTHTOKEN") or getpass.getpass(
+    return argument_value or os.environ.get("NGROK_AUTHTOKEN") or secret_input(
         "貼上 ngrok Authtoken（輸入不會顯示）："
     )
 
@@ -1377,6 +1389,7 @@ class LineConsoleBrowser:
         return ""
 
     def _wait_for_browser(self, milliseconds: int) -> None:
+        notify("checkpoint")
         """Give Playwright time to process navigation and challenge events."""
         for page in reversed(self.pages):
             with contextlib.suppress(Exception):
@@ -1385,10 +1398,12 @@ class LineConsoleBrowser:
         time.sleep(milliseconds / 1000)
 
     def _automate(self, message: str = "ZEAL 正在操作此頁面") -> None:
+        notify("control", human=False)
         if self.gate:
             self.gate.automation(message)
 
     def _give_user_control(self, page: Any, message: str = "現在可由你操作此頁面") -> None:
+        notify("control", human=True)
         if self.gate:
             self.gate.human(page, message)
         else:
@@ -1396,6 +1411,7 @@ class LineConsoleBrowser:
                 page.bring_to_front()
 
     def _act(self, page: Any, operation: Any) -> Any:
+        notify("checkpoint")
         with contextlib.suppress(AttributeError):
             page.bring_to_front()
         return self.gate.action(page, operation) if self.gate else operation()
@@ -2010,12 +2026,31 @@ class LineConsoleBrowser:
     def _enable_use_webhook_console(self, channel_id: str) -> None:
         page = self.open_authenticated_page(messaging_api_url(channel_id), "啟用 Use webhook")
         self._automate("ZEAL 正在啟用 Use webhook")
-        row = page.get_by_text("Use webhook", exact=True).locator("xpath=..")
-        webhook_input = row.locator('input[name="active"]')
-        if webhook_input.count() != 1:
+        webhook_input = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            # Prefer the control's accessible name, but accept the Console's
+            # unique active checkbox when its visible label is localized.
+            for candidate in (
+                page.get_by_role("checkbox", name=re.compile("webhook", re.I)),
+                page.locator('input[name="active"]'),
+            ):
+                if candidate.count() == 1:
+                    webhook_input = candidate
+                    break
+            if webhook_input is not None:
+                break
+            self._wait_for_browser(250)
+        if webhook_input is None:
             raise SetupError("LINE Console 找不到 Use webhook 開關。")
-        if not webhook_input.is_checked():
-            self._act(page, lambda: row.locator("label[for]").click(timeout=8_000))
+        if webhook_input.is_checked():
+            return
+        input_id = webhook_input.get_attribute("id")
+        label = page.locator(f'label[for="{input_id}"]') if input_id else None
+        if label is not None and label.count() == 1:
+            self._act(page, lambda: label.click(timeout=5_000))
+        else:
+            self._act(page, lambda: webhook_input.check(timeout=5_000))
 
     def _enable_use_webhook_manager(self, account_name: str, manager_url: str | None) -> None:
         page = self.open_authenticated_page(manager_url or LINE_MANAGER_URL, "啟用 LINE Webhook")
@@ -2027,10 +2062,15 @@ class LineConsoleBrowser:
         self._click_first(page, ("Settings", "設定"))
         self._click_first(page, ("Response settings", "回應設定"))
         webhook = page.locator('div.webhook-setting shared-switch input[type="checkbox"]')
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and webhook.count() != 1:
+            self._wait_for_browser(250)
         if webhook.count() != 1:
             raise SetupError("LINE Manager 找不到 Webhook 開關。")
         if not webhook.is_checked():
             toggle = page.locator('div.webhook-setting shared-switch label[data-scope="switch"]')
+            if toggle.count() != 1:
+                raise SetupError("LINE Manager 找不到 Webhook 開關的操作元件。")
             self._act(page, lambda: toggle.click(timeout=8_000))
 
     def show_add_friend_qr(self, qr_path: Path) -> None:
@@ -2063,27 +2103,39 @@ class LineConsoleBrowser:
         print("LINE Messaging API 已確認 Webhook URL 可收到驗證請求。")
         state = webhook_endpoint_state(channel_access_token)
         if state.get("active") is not True:
-            try:
-                self._enable_use_webhook_console(channel_id)
-            except Exception as console_error:
-                print(
-                    f"LINE Console 開關未完成（{type(console_error).__name__}）；"
-                    "ZEAL 正在改由 LINE Manager 啟用。"
-                )
-            for _ in range(5):
-                state = webhook_endpoint_state(channel_access_token)
+            for label, enable in (
+                ("LINE Console", lambda: self._enable_use_webhook_console(channel_id)),
+                ("LINE Manager", lambda: self._enable_use_webhook_manager(account_name, manager_url)),
+            ):
+                for attempt in range(2):
+                    try:
+                        enable()
+                    except Exception as error:
+                        print(f"{label} 開關未完成（{type(error).__name__}）。")
+                    # A failed click may still have reached LINE. Check the API
+                    # before trying to click the same switch again.
+                    for check in range(4):
+                        state = webhook_endpoint_state(channel_access_token)
+                        if state.get("active") is True:
+                            break
+                        if check < 3:
+                            time.sleep(1)
+                    if state.get("active") is True:
+                        break
+                    if attempt == 0:
+                        print(f"{label} 尚未回報啟用；稍候重試開關。")
                 if state.get("active") is True:
                     break
-                time.sleep(1)
+                if label == "LINE Console":
+                    print("LINE Console 尚未回報啟用；ZEAL 正在改由 LINE Manager 啟用。")
             if state.get("active") is not True:
-                print("LINE Console 尚未回報開啟；ZEAL 正在改由 LINE Manager 啟用。")
+                page = self.open_authenticated_page(messaging_api_url(channel_id), "手動啟用 Use webhook")
+                self._give_user_control(page, "請在 LINE 瀏覽器手動開啟 Use webhook")
+                print("ZEAL 仍未確認 Webhook 已啟用。請在目前瀏覽器的 Messaging API 頁面開啟 Use webhook。")
                 try:
-                    self._enable_use_webhook_manager(account_name, manager_url)
-                except Exception as manager_error:
-                    raise SetupError(
-                        f"LINE Console 與 Manager 的 Webhook 開關均未成功辨識"
-                        f"（{type(manager_error).__name__}）。"
-                    ) from manager_error
+                    input("完成後按 Enter，ZEAL 會向 LINE 重新確認：")
+                finally:
+                    self._automate()
 
         deadline = time.monotonic() + 65
         while time.monotonic() < deadline:
@@ -2181,23 +2233,32 @@ def start_setup_runtime(
     while True:
         ngrok: subprocess.Popen[str] | None = None
         app: subprocess.Popen[str] | None = None
-        public_url = getattr(args, "public_url", None)
         try:
             setup_step(
                 5, "建立公開 HTTPS 通道",
                 f"LINE 無法直接連到你的電腦；公開網址須轉送到本機 Bot 的 {account.port} 埠。",
             )
+            if getattr(args, "connection_choice_pending", False):
+                if existing_tunnel_url(account.port):
+                    print(f"已找到本機 {account.port} 埠可用的公開連線，將直接沿用。")
+                    args.public_url = None
+                else:
+                    args.public_url = prompt_public_url()
+                args.connection_choice_pending = False
+            public_url = getattr(args, "public_url", None)
             if public_url is None:
-                print(f"取得 ngrok Authtoken：{_terminal_link(NGROK_AUTHTOKEN_URL)}")
                 public_url = existing_tunnel_url(account.port)
                 if public_url:
                     print("已找到對應此連接埠的 ngrok 通道，將沿用目前網址。")
                 else:
-                    binary = install_ngrok()
-                    if not getattr(args, "ngrok_configured", False):
-                        ensure_ngrok_config(binary, args.ngrok_authtoken)
+                    binary = prepare_ngrok(args.ngrok_authtoken, account.port)
+                    if binary is None:
+                        public_url = existing_tunnel_url(account.port)
+                        if public_url is None:
+                            raise SetupError("剛才找到的公開連線已中斷，請重試。")
+                    else:
                         args.ngrok_configured = True
-                    ngrok, public_url = tunnel_url(binary, account.port, directory)
+                        ngrok, public_url = tunnel_url(binary, account.port, directory)
                 print(f"ngrok 公開網址：{_terminal_link(public_url)}")
             else:
                 print(f"自備公開網址：{_terminal_link(public_url)}")
@@ -2246,7 +2307,7 @@ def start_setup_runtime(
             if choice == options[4]:
                 raise SetupError("已停止於公開網址／Bot 啟動；本機專案與憑證仍保留。") from error
             if choice == options[2]:
-                args.ngrok_authtoken = getpass.getpass("新的 ngrok Authtoken（輸入時不顯示）：").strip()
+                args.ngrok_authtoken = secret_input("新的 ngrok Authtoken（輸入時不顯示）：").strip()
                 args.ngrok_configured = False
                 args.public_url = None
             if choice == options[3]:
@@ -2280,12 +2341,9 @@ def run_setup(args: Any) -> None:
     """Run `zeal line-bot setup`."""
     try:
         confirm_setup_start()
-        args.public_url = prompt_public_url()
-        if args.public_url is None:
-            prepare_ngrok(args.ngrok_authtoken, args.port)
-            args.ngrok_configured = True
-        else:
-            print("將使用自備 HTTPS 網址；啟動 Bot 後會請 LINE 測試能否連上。")
+        args.public_url = None
+        args.ngrok_configured = False
+        args.connection_choice_pending = True
         route = prompt_account_route()
         if route == "create":
             setup_step(
@@ -2294,6 +2352,7 @@ def run_setup(args: Any) -> None:
             )
             account = prompt_account_details(args.port)
             print(f"「{account.name}」的申請資料已備妥；接下來會開啟 LINE 瀏覽器。")
+            existing_project.configure_project_mode(args)
             _run_setup_with_account(args, account)
         else:
             args.port = prompt_valid_port(args.port)
@@ -2319,6 +2378,7 @@ def run_setup(args: Any) -> None:
                             continue
                         if action == options[2]:
                             account = prompt_account_details(args.port)
+                            existing_project.configure_project_mode(args)
                             _run_setup_with_account(args, account, browser=browser)
                             return
                         if action == options[3]:
@@ -2357,10 +2417,12 @@ def run_setup(args: Any) -> None:
                         break
                     print("請直接按 Enter 繼續；若要離開，請按 Ctrl+C。")
                 account = AccountDetails(selected.name, "", args.port)
+                existing_project.configure_project_mode(args)
                 _run_setup_with_account(args, account, browser=browser, manager_url=selected.manager_url)
     except (KeyboardInterrupt, EOFError):
         print("\n已取消，尚未建立專案或啟動程序。")
     except SetupError as error:
+        notify("failed", code=type(error).__name__)
         print(f"\n設定未完成：{error}", file=sys.stderr)
 
 
@@ -2373,17 +2435,23 @@ def _run_setup_with_account(
 ) -> None:
     """Complete setup after the account is created or selected."""
     output_root = (args.output or Path.cwd()).resolve()
-    destination = project_directory(output_root, account.name)
+    notify("control", human=False)
+    external = getattr(args, "existing_project", None) is not None
+    destination = args.existing_project if external else project_directory(output_root, account.name)
     try:
-        destination, reused = retry_setup_step(
-            "建立本機專案", lambda: choose_project_destination(destination, account)
-        )
+        if external:
+            reused = False
+        else:
+            destination, reused = retry_setup_step(
+                "建立本機專案", lambda: choose_project_destination(destination, account)
+            )
     except SetupError as error:
+        notify("failed", code=type(error).__name__)
         print(f"\n設定未完成：{error}", file=sys.stderr)
         return
-    existing_credentials = (destination / ".env").is_file()
+    existing_credentials = not external and (destination / ".env").is_file()
     project_status = (
-        "沿用已設定的本機專案" if existing_credentials
+        "沿用使用者的既有專案" if external else "沿用已設定的本機專案" if existing_credentials
         else "接續前次未完成的專案" if reused else "已建立專案"
     )
     print(f"\n{project_status}：{destination}")
@@ -2391,6 +2459,7 @@ def _run_setup_with_account(
     ngrok: subprocess.Popen[str] | None = None
     app: subprocess.Popen[str] | None = None
     completed = False
+    services_verified = False
     try:
         account_action = (
             "ZEAL 會在瀏覽器確認剛才選定的帳號，並接續它的設定。"
@@ -2495,7 +2564,8 @@ def _run_setup_with_account(
                 print(f"Messaging API 已就緒（Channel ID：{messaging.channel_id}）；接下來會準備 Bot 使用的憑證。")
             setup_step(
                 4, "保存 Channel 憑證",
-                "Bot 需要 Channel secret 驗證 LINE 訊息，並使用 access token 傳送回覆。ZEAL 會將憑證保存在本機專案的 .env，不會顯示密鑰。",
+                "Bot 需要 Channel secret 驗證 LINE 訊息，並使用 access token 傳送回覆。"
+                + ("ZEAL 會另外保存憑證，保留原專案的 .env。" if external else "ZEAL 會將憑證保存在本機專案的 .env，不會顯示密鑰。"),
             )
             credentials = retry_setup_step(
                 "讀取 Channel 憑證",
@@ -2503,16 +2573,24 @@ def _run_setup_with_account(
                 browser,
                 fallback=prompt_existing_credentials,
             )
-            destination = retry_setup_step(
-                "寫入本機憑證",
-                lambda: choose_credentials_destination(destination, account, credentials),
-            )
-            if not existing_credentials:
-                print("已安全寫入 .env（未在終端輸出密鑰）。")
+            if external:
+                credentials_file = retry_setup_step(
+                    "另外保存 LINE 憑證",
+                    lambda: existing_project.save_project_credentials(destination, credentials, messaging.channel_id),
+                )
+                existing_project.prepare_project_integration(args, destination, credentials_file)
             else:
-                print("已確認本機 .env 的憑證與所選 Channel 相符；接下來會啟動連線與 Bot。")
+                destination = retry_setup_step(
+                    "寫入本機憑證",
+                    lambda: choose_credentials_destination(destination, account, credentials),
+                )
+                if not existing_credentials:
+                    print("已安全寫入 .env（未在終端輸出密鑰）。")
+                else:
+                    print("已確認本機 .env 的憑證與所選 Channel 相符；接下來會啟動連線與 Bot。")
 
-            account, ngrok, app, callback_url = start_setup_runtime(
+            runtime = existing_project.start_existing_runtime if external else start_setup_runtime
+            account, ngrok, app, callback_url = runtime(
                 args, account, destination, credentials
             )
 
@@ -2528,6 +2606,8 @@ def _run_setup_with_account(
                 )),
                 browser,
             )
+            services_verified = True
+            notify("verified", webhook_verified=True)
             auto_response_disabled = (
                 browser.disable_auto_response_messages(account.name, manager_url)
                 if manager_url else browser.disable_auto_response_messages(account.name)
@@ -2557,7 +2637,7 @@ def _run_setup_with_account(
                     else "本次啟動的 Bot 將停止"
                 )
                 input(f"用手機掃描 QR Code，傳送訊息並確認收到 Bot 回覆；按 Enter 完成設定並結束指令（{ending}）：")
-                if getattr(args, "public_url", None) is not None:
+                if external or getattr(args, "public_url", None) is not None:
                     try:
                         result = line_api_request(
                             credentials.channel_access_token, "POST", "/channel/webhook/test",
@@ -2569,15 +2649,19 @@ def _run_setup_with_account(
                 else:
                     connection_ready = existing_tunnel_url(account.port) is not None
                 if ((app is None or app.poll() is None)
-                    and local_port_listening(account.port)
+                    and (external or local_port_listening(account.port))
                     and (ngrok is None or ngrok.poll() is None)
                     and connection_ready):
                     break
-                print("Bot 或公開連線已停止；ZEAL 將在本次設定中重新啟動並驗證 Webhook。")
+                print("既有專案連線未通過；請檢查原服務，ZEAL 會重新驗證。" if external else "Bot 或公開連線已停止；ZEAL 將在本次設定中重新啟動並驗證 Webhook。")
+                services_verified = False
+                notify("verified", webhook_verified=False)
                 stop_process(app)
                 stop_process(ngrok)
+                if external and ngrok is not None:
+                    args.existing_callback_url = None
                 app = ngrok = None
-                account, ngrok, app, callback_url = start_setup_runtime(
+                account, ngrok, app, callback_url = runtime(
                     args, account, destination, credentials
                 )
                 configured = retry_setup_step(
@@ -2588,16 +2672,27 @@ def _run_setup_with_account(
                     )),
                     browser,
                 )
-            print(format_completion_summary(
-                account,
-                destination,
-                callback_url,
-                messaging,
-                webhook_configured=configured,
-                keep_running=args.keep_running,
-                using_ngrok=getattr(args, "public_url", None) is None,
-            ))
-            if args.keep_running:
+                services_verified = True
+                notify("verified", webhook_verified=True)
+            if external:
+                print(existing_project.completion_summary(
+                    account, destination, callback_url, messaging, credentials_file,
+                    using_ngrok=args.existing_using_ngrok, keep_running=args.keep_running,
+                    owned_ngrok=ngrok is not None,
+                ))
+                if ngrok is not None and args.keep_running:
+                    print(f"ZEAL 啟動的公開連線 PID：{ngrok.pid}")
+            else:
+                print(format_completion_summary(
+                    account,
+                    destination,
+                    callback_url,
+                    messaging,
+                    webhook_configured=configured,
+                    keep_running=args.keep_running,
+                    using_ngrok=getattr(args, "public_url", None) is None,
+                ))
+            if args.keep_running and not external:
                 cached_ngrok = zeal_bin_directory() / ("ngrok.exe" if os.name == "nt" else "ngrok")
                 ngrok_binary = (
                     str(ngrok.args[0]) if ngrok is not None
@@ -2612,12 +2707,17 @@ def _run_setup_with_account(
                     using_ngrok=getattr(args, "public_url", None) is None,
                 ))
             completed = True
+            result_fields = {"project_mode": "existing", "credentials_file": str(credentials_file)} if external else {}
+            notify("complete", project=str(destination), webhook_verified=True, reply_confirmed=True, **result_fields)
     except (KeyboardInterrupt, EOFError):
-        print("\n已取消。已建立的專案會保留；若已寫入 .env，請自行決定是否保留。")
+        print("\n已結束設定。已建立的專案會保留；若已寫入 .env，請自行決定是否保留。")
+        if args.keep_running and services_verified:
+            print("已驗證的 Bot 與公開連線會繼續在背景執行。")
     except SetupError as error:
+        notify("failed", code=type(error).__name__)
         print(f"\n設定未完成：{error}", file=sys.stderr)
     finally:
-        if not completed or not args.keep_running:
+        if not args.keep_running or not (completed or services_verified):
             stop_process(app)
             stop_process(ngrok)
 

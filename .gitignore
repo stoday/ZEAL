@@ -12,5 +12,9 @@ wheels/
 # ZEAL's local Playwright session: may contain LINE login cookies.
 .zeal-line-browser-profile/
 
+# Private agent worker control and status.
+.zeal-agent/
+
 graphify-out
 .pytest_cache/
+.tmp/

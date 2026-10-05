@@ -14,7 +14,7 @@ their time developing the Bot itself.
 - Python 3.11 or later
 - [uv](https://docs.astral.sh/uv/)
 - A LINE account that can sign in to LINE Business
-- A public HTTPS URL already forwarding to the local Bot, or an [ngrok account](https://dashboard.ngrok.com/signup) with an [Authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
+- A public HTTPS URL already forwarding to the local Bot, or the ability to create an [ngrok account](https://dashboard.ngrok.com/signup) and obtain an [Authtoken](https://dashboard.ngrok.com/get-started/your-authtoken) when prompted
 
 ## Install
 
@@ -46,21 +46,20 @@ From the source checkout, use:
 uv run zeal line-bot setup
 ```
 
-Setup proceeds as follows:
+After running the command, choose a new or existing Official Account, complete LINE sign-in and verification in the browser, then send a message from your phone and confirm the Bot replies. ZEAL asks about the public connection only when it is needed.
+
+### Setup details
 
 - **Install the browser**
   - ZEAL uses a visible Playwright Chromium browser for LINE setup. If it is missing, ZEAL announces and downloads it; otherwise it uses the installed copy.
   - On Linux, the first installation also installs required system packages and may need administrator privileges. By default, sign-in state is saved in `.zeal-line-browser-profile/` beside the directory where you run the command, so later runs can continue the session.
-- **Set the public URL**
-  - Read the terminal introduction, press Enter, and choose ngrok or an existing public HTTPS URL. LINE needs this URL to send messages to the local Bot, which uses port `8000` by default.
-  - Your own URL must already forward to the Bot port. Enter a base URL such as `https://bot.example.com` or the full `https://bot.example.com/callback`; ZEAL uses `/callback` and asks LINE to test the connection after starting the Bot.
-  - With ngrok, ZEAL checks or downloads the program and reuses an existing tunnel for the same Bot port. If you have no Authtoken, the terminal guides you through registration and saves it through hidden input. A free-plan URL may change after a restart.
 - **Set up the Official Account**
   - To create one, enter its name, company or store name, email, and industry in the terminal. ZEAL fills the form in the visible LINE browser.
   - To continue an existing account, sign in, select it from the live list of accounts you can manage, and press Enter to confirm. You do not need to enter the application details again.
 - **Prepare the local project**
-  - ZEAL creates `line-bot-<account-name>/` using the account name. An unchanged project can be reused on later runs.
-  - If existing files or `.env` conflict with the selected channel, choose to overwrite, use a suggested numbered project name, or enter your own. ZEAL backs up the replaced data before continuing.
+  - Choose whether ZEAL should build a Python Bot environment or use your existing application. Existing-project mode keeps your source and `.env`, and uses your original startup/deployment workflow.
+  - In generated-project mode, ZEAL creates `line-bot-<account-name>/` using the account name. An unchanged generated project can be reused on later runs.
+  - If generated-project files or `.env` conflict with the selected channel, choose to overwrite, use a suggested numbered project name, or enter your own. ZEAL backs up the replaced data before continuing.
 - **Complete sign-in and verification in the browser**
   - A gray veil means ZEAL is operating and manual input is locked; a green notice means you can use the page. Complete LINE sign-in, OTP/MFA, and human verification yourself in that browser when prompted.
   - ZEAL then resumes and locks the page again. For a new account, it clicks Create, Finish, and Agree on the information-use consent page if shown.
@@ -68,7 +67,12 @@ Setup proceeds as follows:
   - On first activation, ZEAL guides you through choosing or creating a Provider from LINE's live list in Official Account Manager, then continues the channel setup in Developers Console. The Provider owns the service and Channel; the link cannot be moved to another Provider, so confirm your choice.
   - If the account already has a Messaging API channel, ZEAL keeps its linked Provider and channel. There is no new Provider choice.
 - **Save the Channel credentials**
-  - ZEAL retrieves the Channel secret and access token the Bot needs and saves them in the local project's `.env` without printing the secrets. If `.env` already exists, ZEAL first checks that it belongs to the selected channel. Keep this file private.
+  - ZEAL retrieves the Channel secret and access token without printing them. Generated projects use `.env`; existing applications receive a separate file under `.zeal-line/` and keep their original `.env`. Keep credential files private.
+- **Set the public URL**
+  - The following startup and `/callback` defaults describe generated Python Bots. Existing applications use their original startup workflow and actual Webhook path; see [Connect your existing application](#connect-your-existing-application).
+  - Once the channel is ready, ZEAL reuses a public connection already running for the same Bot port. Otherwise, choose an existing public HTTPS URL or let ZEAL create a temporary URL. LINE needs this URL to send messages to the local Bot, which uses port `8000` by default.
+  - Your own URL must already forward to the Bot port. Enter a base URL such as `https://bot.example.com` or the full `https://bot.example.com/callback`; ZEAL uses `/callback` and asks LINE to test the connection after starting the Bot.
+  - For a temporary URL, ZEAL checks or downloads ngrok. If you have no Authtoken, the terminal guides you through registration and saves it through hidden input. A free-plan URL may change after a restart.
 - **Start the Bot and configure the Webhook**
   - ZEAL starts the local Bot and the selected public connection, sets the `/callback` URL in LINE, tests that LINE can reach it, and confirms Use webhook is enabled.
   - It also tries to turn off LINE's default auto-response to avoid duplicate replies. If that step does not succeed, the terminal tells you how to turn it off in LINE Manager. Greeting messages remain configurable.
@@ -82,13 +86,87 @@ If you use ngrok later:
 - **Stop only ngrok:** Use the ngrok PID from the setup summary: `Stop-Process -Id <ngrok PID>` in PowerShell, or `kill <ngrok PID>` in a macOS/Linux terminal.
 - **Restart ngrok:** In a new terminal, run the full ngrok command shown in the summary. If ngrok is on `PATH`, use `ngrok http 8000` on any OS, replacing `8000` with the Bot port. If the public URL changes, update the LINE Developers Console Webhook URL with `/callback`, click Verify, and confirm Use webhook is enabled.
 
+## Connect your existing application
+
+During guided setup, choose **use your own project without building a Python
+environment**, or select it directly:
+
+```text
+zeal line-bot setup --existing-project .
+```
+
+Use `uv run zeal` from this source checkout. Start your app with its usual
+command, such as `npm run dev`, and use the actual port printed by the app.
+Supply the complete deployed HTTPS Webhook URL, or that local port and its
+callback path for a ZEAL/ngrok tunnel. Custom paths such as `/api/line/webhook`
+are supported. A listening port alone is not sufficient: the app must implement
+LINE Webhook receipt, signature validation, and message replies.
+
+ZEAL saves separate Channel credentials under `.zeal-line/`, adds its Git ignore
+rule, and preserves your original `.env`. An app already using the same Channel
+can keep its configuration; otherwise configure credentials using its existing
+workflow. ZEAL verifies LINE connectivity and waits for your phone reply test.
+It does not generate Python files, install Bot packages, or start/stop your app.
+If LINE handlers are missing, ask your coding agent to implement them in the
+existing stack; ZEAL's skill identifies this preparation step and waits for it.
+
+## Use with a coding agent
+
+The original terminal workflow remains available. Install the ZEAL skill in the
+directory where you want to create your Bot, then ask the agent to help set it up:
+
+```text
+zeal install-skill codex
+zeal install-skill claude
+zeal install-skill antigravity
+```
+
+Choose the command for your agent. For an unreleased source checkout, prefix
+commands with `uv run`, for example `uv run zeal install-skill codex`.
+Project installs use `.agents/skills/zeal/` for Codex/Antigravity and
+`.claude/skills/zeal/` for Claude Code. Add `--global` to install across projects,
+or use `zeal install-skill --dest <skills-directory>` for another skills root.
+Existing skill folders require `--force` to overwrite packaged files.
+
+The skill uses ZEAL's visible LINE browser; host browser tools are not required.
+Run the agent locally on the same desktop where you will operate that browser.
+Only the workflow worker runs in the background. When LINE requires login,
+OTP/MFA, or human verification, ZEAL unlocks the page and brings its browser
+window to the foreground. Complete the task there, then tell the agent to continue.
+If a secret is needed, enter it in ZEAL's local password form linked by the
+agent; do not paste it into chat. Finish by sending a message from your phone
+and confirming that the Bot replied. Verified Bot/tunnel services keep running
+by default, just as in terminal setup.
+
+For direct coordination and diagnosis, these commands return JSON:
+
+```text
+zeal agent start
+zeal agent start --existing-project .
+zeal agent status --session <id> --wait 5
+zeal agent answer --session <id> --prompt <prompt-id> --value <answer>
+zeal agent cancel --session <id>
+```
+
+Use the returned session and current prompt IDs in the same working directory.
+Omit `--value` for an Enter confirmation. Secret prompts accept input only through
+the local form. Cancellation is cooperative and may wait for a pending external
+call. If the worker is lost, close its old browser and inspect uncertain external
+changes before explicitly using `zeal agent abandon --session <id> --closed-browser`.
+Never automatically restart a job to retry account creation.
+
+Local control state is kept in `.zeal-agent/`; exclude it and browser profiles
+from commits/uploads. See [the agent contract](dev_docs/agent-skill.md) for scope
+and validation. Cross-host installation is supported; live LINE and host-agent
+end-to-end validation remains separate from local tests.
+
 ## Other commands
 
 ```text
 # Stop the Bot and ngrok (if used) when setup finishes
 zeal line-bot setup --stop-after-setup
 
-# Manually provide credentials for an existing Messaging API channel
+# Advanced: manually provide credentials for an existing Messaging API channel
 zeal line-bot resume
 
 # View all available options

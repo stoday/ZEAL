@@ -4,7 +4,9 @@
 
 執行環境為 Windows PowerShell、Python、Flask 與 ngrok。這是本機開發與測試流程；正式服務再將同一支程式部署到具有效 HTTPS 憑證的主機即可。
 
-> 若使用本專案提供的 ZEAL 工具，可先執行 `uv sync`，再執行 `uv run zeal line-bot setup`。ZEAL 會先說明流程，按 Enter 後讓你選擇自備公開 HTTPS 網址，或由 ngrok 建立測試用網址；自備網址須轉送到本機 Bot 埠，Bot 啟動後會由 LINE 測試連線。選擇 ngrok 時，缺少程式才下載；若指定埠已有通道就沿用，否則確認 ngrok 設定。接著選擇建立新官方帳號，或從登入者可管理的清單選擇並確認既有帳號。新建時才需填寫申請資料。當 LINE 顯示可用 Provider 時，ZEAL 會在終端列出編號讓你選擇既有 Provider 或輸入新 Provider 名稱；不必預先知道或記憶 Provider 名稱。它會建立 `line-bot-<名稱>/`、在可見瀏覽器自動操作 LINE Console，並將讀取到的密鑰寫入被 Git 忽略的 `.env`。灰色遮罩表示 ZEAL 正在操作、網頁暫不接受手動輸入；綠色提示表示交由你操作。登入、OTP/MFA、CAPTCHA 與其他人類驗證仍須由帳號本人在同一個瀏覽器完成。完成後 Bot 留在背景；若使用 ngrok，它也會留在背景。摘要會顯示 PID、日誌和停止方法。Provider 不可日後移轉，因此不能由程式猜測。
+> 若使用本專案提供的 ZEAL 工具，可先執行 `uv sync`，再執行 `uv run zeal line-bot setup`。先選擇建立新官方帳號，或從登入者可管理的清單選擇並確認既有帳號；新建時才需填寫申請資料。可選擇自動建置 Python Bot，或沿用自己的專案、不建置 Python 環境。ZEAL 在可見瀏覽器操作 LINE Console；灰色遮罩表示正在自動操作，綠色提示表示交由你完成登入、OTP/MFA、CAPTCHA 等人類驗證。首次啟用 Messaging API 時，從 LINE 即時清單選擇或建立 Provider；Provider 不可日後移轉，不能由程式猜測。Channel 準備好後，才設定公開 HTTPS 連線並由 LINE 驗證 Webhook。完成後，ZEAL 啟動的 Bot 和 ngrok 預設繼續執行，摘要顯示管理方式。
+>
+> 已有專案可使用 `uv run zeal line-bot setup --existing-project .`，依原本方式啟動或部署，例如 `npm run dev`，再提供完整 HTTPS Webhook 網址，或實際連接埠及路徑。專案須具備 LINE Webhook、簽章驗證和回覆處理；只有開啟 PORT 還不夠。ZEAL 保存獨立憑證到 `.zeal-line/`，保留原程式與 `.env`，不啟動或停止原專案。使用 skill 時，coding agent 可在使用者要求整合後補上程式，再交回 ZEAL 驗證。以下手動教學示範的是新建 Python Bot。
 
 若本機專案或 `.env` 已有不同資料，ZEAL 會顯示原路徑與可用的新專案名稱，當場詢問要覆寫、採用建議名稱，或自行命名；覆寫前先備份原資料，選完即可接續流程。
 Provider 只在首次啟用 Messaging API 時選擇；已有 Channel 的帳號會沿用原本綁定的 Provider，終端機會明確顯示這個狀態。

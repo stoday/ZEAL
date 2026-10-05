@@ -43,21 +43,20 @@ zeal line-bot setup
 uv run zeal line-bot setup
 ```
 
-設定流程如下：
+執行後依序：選擇新建或接續既有官方帳號、在瀏覽器完成 LINE 登入與驗證、用手機傳訊息並確認 Bot 回覆。ZEAL 會在需要公開連線時才詢問網址。
+
+### 設定細節
 
 - **安裝瀏覽器**
   - ZEAL 使用可見的 Playwright Chromium 操作 LINE 後台。若電腦尚未安裝，ZEAL 會先告知並下載；已有安裝時直接使用。
   - 在 Linux 上，首次安裝也會安裝所需的系統套件，可能需要管理員權限。瀏覽器登入狀態預設保存在執行指令目錄的 `.zeal-line-browser-profile/`，方便下次接續。
-- **設定公開網址**
-  - 看完終端機的流程說明並按 Enter，選擇「使用 ngrok」或「使用已有的公開 HTTPS 網址」。LINE 需要這個網址，才能把訊息送到本機 Bot；Bot 預設使用 `8000` 埠。
-  - 自備網址須已轉送到 Bot 連接埠。可輸入基底網址，例如 `https://bot.example.com`，或完整的 `https://bot.example.com/callback`；ZEAL 會補上 `/callback`，並在 Bot 啟動後請 LINE 測試連線。
-  - 選擇 ngrok 時，ZEAL 會檢查或下載程式，並沿用同一個 Bot 埠的既有通道。若尚無 Authtoken，終端機會引導你註冊並以隱藏輸入儲存；免費方案的公開網址可能在重新啟動後改變。
 - **設定官方帳號**
   - 選擇「建立新的官方帳號」時，在終端機輸入帳號名稱、公司／店鋪名稱、電子郵件和業種；ZEAL 會將資料填入 LINE 的可見瀏覽器。
   - 選擇「接續既有官方帳號」時，登入後從 ZEAL 即時讀取的可管理帳號清單選擇，並按 Enter 確認，不必重填申請資料。
 - **準備本機專案**
-  - ZEAL 會以帳號名稱建立 `line-bot-<帳號名稱>/`。重新執行時，未修改的專案可直接沿用。
-  - 若既有檔案或 `.env` 與所選 Channel 衝突，可選擇覆寫、使用建議的編號新專案名稱，或自行命名；ZEAL 會先備份被覆寫的資料，再接續設定。
+  - 可選擇「由 ZEAL 建立簡易 Python Bot 與環境」或「使用自己的專案，不建置 Python 環境」。沿用時保留原程式與 `.env`，使用原本的啟動／部署方式。
+  - 選擇自動建置時，ZEAL 會以帳號名稱建立 `line-bot-<帳號名稱>/`。重新執行時，未修改的產生專案可直接沿用。
+  - 若自動建置的專案檔案或 `.env` 與所選 Channel 衝突，可選擇覆寫、使用建議的編號新專案名稱，或自行命名；ZEAL 會先備份被覆寫的資料，再接續設定。
 - **在瀏覽器完成登入與驗證**
   - 灰色遮罩表示 ZEAL 正在操作，網頁暫不接受手動輸入；綠色提示表示輪到你操作。LINE 要求登入、OTP／MFA 或人類驗證時，請在同一個瀏覽器親自完成。
   - 完成後 ZEAL 會接手並重新鎖定網頁。新建帳號時，ZEAL 會按下申請表的「建立／確定」、確認頁的「完成」，以及資訊使用同意頁的「同意」（若出現）。
@@ -65,7 +64,12 @@ uv run zeal line-bot setup
   - 首次啟用時，ZEAL 會在 LINE Official Account Manager 引導你從即時清單選擇或建立 Provider，再接續 LINE Developers Console 的 Channel 設定。Provider 代表這項服務與 Channel 的經營者，連結後無法改掛到其他 Provider，請確認選擇。
   - 若帳號已有 Messaging API Channel，ZEAL 會沿用已綁定的 Provider 與 Channel，不需重新選擇。
 - **保存 Channel 憑證**
-  - ZEAL 會取得 Bot 所需的 Channel secret 和 access token，寫入本機專案的 `.env`，不在終端機顯示密鑰。若已有 `.env`，會先核對它是否屬於所選 Channel；請勿公開憑證檔。
+  - ZEAL 會取得 Bot 所需的 Channel secret 和 access token，不在終端機顯示密鑰。自動建置的專案使用 `.env`；沿用自己的專案時，另外存到 `.zeal-line/`，保留原本的 `.env`。請勿公開憑證檔。
+- **設定公開網址**
+  - 以下啟動方式及 `/callback` 預設值適用於自動建置的 Python Bot。自己的專案使用原本的啟動方式及實際 Webhook 路徑，詳見[沿用自己的專案](#沿用自己的專案)。
+  - Channel 準備好後，ZEAL 會先沿用同一個 Bot 埠已在運作的公開連線；若沒有，才讓你選擇「使用已有的公開 HTTPS 網址」或「由 ZEAL 建立測試用網址」。LINE 需要這個網址，才能把訊息送到本機 Bot；Bot 預設使用 `8000` 埠。
+  - 自備網址須已轉送到 Bot 連接埠。可輸入基底網址，例如 `https://bot.example.com`，或完整的 `https://bot.example.com/callback`；ZEAL 會補上 `/callback`，並在 Bot 啟動後請 LINE 測試連線。
+  - 選擇測試用網址時，ZEAL 會檢查或下載 ngrok。若尚無 Authtoken，終端機會引導你註冊並以隱藏輸入儲存；免費方案的公開網址可能在重新啟動後改變。
 - **啟動 Bot 並設定 Webhook**
   - ZEAL 會啟動本機 Bot 與所選的公開連線，將 `/callback` 網址設定到 LINE，測試 LINE 能否送達，並確認 Use webhook 已啟用。
   - ZEAL 也會嘗試關閉 LINE 預設自動回覆，避免同一則訊息收到兩次回覆；若未能完成，終端機會提示你到 LINE Manager 手動關閉。加好友歡迎訊息仍可自行設定。
@@ -79,13 +83,81 @@ uv run zeal line-bot setup
 - **只停止 ngrok：** 使用設定摘要列出的 ngrok PID；PowerShell 執行 `Stop-Process -Id <ngrok PID>`，macOS／Linux 終端機執行 `kill <ngrok PID>`。
 - **重新啟動 ngrok：** 在另一個終端機執行摘要列出的完整指令。若 ngrok 已加入 `PATH`，各作業系統都可用 `ngrok http 8000`，並將 `8000` 換成 Bot 連接埠。若公開網址改變，請在 LINE Developers Console 更新 Webhook URL（加上 `/callback`）、按 Verify，並確認 Use webhook 已啟用。
 
+## 沿用自己的專案
+
+設定時選擇「使用自己的專案，不建置 Python 環境」，或直接指定：
+
+```text
+zeal line-bot setup --existing-project .
+```
+
+從此原始碼目錄執行時，請使用 `uv run zeal`。請以原指令啟動專案，
+例如 `npm run dev`，並使用啟動訊息顯示的實際 port。可提供已部署的完整
+HTTPS Webhook 網址，或提供本機 port 與 Webhook 路徑，由 ZEAL／ngrok
+建立公開連線；支援 `/api/line/webhook` 等自訂路徑。
+只有 port 開啟還不夠，原專案必須能接收 LINE Webhook、驗證簽章並回覆訊息。
+
+ZEAL 將 Channel 憑證另存到 `.zeal-line/`，加上 Git 忽略規則，保留原 `.env`。
+若原專案已使用同一個 Channel，可沿用現有設定；需要更新時，請使用原專案的
+設定方式。ZEAL 會驗證 LINE 連線，再等待你用手機確認收到回覆。
+它不產生 Python 程式、不安裝 Bot 套件，也不啟動或停止原 Bot。
+若還缺少 LINE 接收／回覆程式，可請 coding agent 依原技術架構加入；
+ZEAL skill 會指出這個準備步驟並等待完成。
+
+## 使用 coding agent 操作
+
+原有終端機流程仍可直接使用。在預計建立 Bot 的工作目錄，依使用的 agent
+安裝 ZEAL skill，再請 agent 協助建立或接續 LINE Bot：
+
+```text
+zeal install-skill codex
+zeal install-skill claude
+zeal install-skill antigravity
+```
+
+選擇符合你的 agent 的指令即可。尚未發佈的原始碼版本，請在指令前加上
+`uv run`，例如 `uv run zeal install-skill codex`。
+Codex／Antigravity 安裝到 `.agents/skills/zeal/`，Claude Code 安裝到
+`.claude/skills/zeal/`。加上 `--global` 可跨專案使用；其他技能根目錄可用
+`zeal install-skill --dest <技能目錄>`。既有 skill 資料夾須明確加上
+`--force` 才會覆寫套件提供的檔案。
+
+Skill 使用 ZEAL 的可見 LINE 瀏覽器，不需另外配置 agent 瀏覽器工具。
+請在能親自操作該瀏覽器的同一台桌面電腦上執行 agent。
+只有管理流程的工作程序在背景執行。需要登入、OTP／MFA 或人類驗證時，
+ZEAL 會解除網頁操作鎖並將瀏覽器視窗帶到前景；請親自完成，再告知 agent 接續。
+若需要密鑰，請開啟 agent 提供的 ZEAL 本機密碼表單直接輸入，不要貼到聊天中。
+最後用手機傳送訊息並確認 Bot 回覆。與終端機流程相同，已驗證的 Bot 與
+公開連線預設繼續執行。
+
+需要直接協調或診斷時，下列指令會回傳 JSON：
+
+```text
+zeal agent start
+zeal agent start --existing-project .
+zeal agent status --session <id> --wait 5
+zeal agent answer --session <id> --prompt <prompt-id> --value <回答>
+zeal agent cancel --session <id>
+```
+
+請留在相同工作目錄，使用回傳的工作 ID 與當前問題 ID。省略 `--value`
+表示按 Enter 確認；密鑰問題只接受本機表單輸入。取消會等待流程安全接續點，
+執行中的外部呼叫可能需要先結束。若工作程序失聯，請先關閉舊瀏覽器並檢查
+尚未確認的外部變更，再明確使用
+`zeal agent abandon --session <id> --closed-browser` 釋放本機控制狀態。
+不要為了重試建立帳號而自動重跑整個工作。
+
+本機控制狀態保存在 `.zeal-agent/`；請勿將它或瀏覽器登入資料提交／上傳。
+範圍與驗證方式見 [agent 介面契約](dev_docs/agent-skill.md)。支援跨 agent
+安裝；LINE 與各 agent 的實際端到端操作驗證，與本機測試分開計算。
+
 ## 其他指令說明
 
 ```text
 # 只完成設定，結束時停止本次啟動的 Bot 與 ngrok（若有使用）
 zeal line-bot setup --stop-after-setup
 
-# 手動提供既有 Messaging API channel 憑證，建立本機 Bot 專案
+# 進階：已持有 Messaging API Channel 憑證時，手動建立本機 Bot 專案
 zeal line-bot resume
 
 # 查看所有可用選項
